@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sha1.h"
+#include "migration/vmstate.h"
 
 static uint64_t swapLong(uint64_t x) {
     x = (x & 0x00000000FFFFFFFF) << 32 | (x & 0xFFFFFFFF00000000) >> 32;
@@ -268,9 +269,33 @@ static void ipod_touch_sha1_init(Object *obj)
     sha1_reset(s);
 }
 
+static const VMStateDescription vmstate_ipod_touch_sha1 = {
+    .name = TYPE_IPOD_TOUCH_SHA1,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(config, IPodTouchSHA1State),
+        VMSTATE_UINT32(memory_start, IPodTouchSHA1State),
+        VMSTATE_UINT32(memory_mode, IPodTouchSHA1State),
+        VMSTATE_UINT32(insize, IPodTouchSHA1State),
+        VMSTATE_BUFFER(buffer, IPodTouchSHA1State),
+        VMSTATE_UINT32_ARRAY(hw_buffer, IPodTouchSHA1State, 0x10),
+        VMSTATE_UINT32(buffer_ind, IPodTouchSHA1State),
+        VMSTATE_UINT8_ARRAY(hashout, IPodTouchSHA1State, 0x14),
+        VMSTATE_BOOL(hw_buffer_dirty, IPodTouchSHA1State),
+        VMSTATE_BOOL(hash_computed, IPodTouchSHA1State),
+        VMSTATE_BOOL(memory_fed, IPodTouchSHA1State),
+        VMSTATE_BOOL(stateful, IPodTouchSHA1State),
+        VMSTATE_UINT32_ARRAY(H, IPodTouchSHA1State, 5),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void ipod_touch_sha1_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->vmsd = &vmstate_ipod_touch_sha1;
 }
 
 static const TypeInfo ipod_touch_sha1_info = {
