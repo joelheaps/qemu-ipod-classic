@@ -28,13 +28,27 @@ static void sha1_reset(IPodTouchSHA1State *s)
 	s->hw_buffer_dirty = false;
 	s->hash_computed = false;
 	s->memory_fed = false;
+	s->H[0] = 0x67452301; s->H[1] = 0xefcdab89; s->H[2] = 0x98badcfe;
+	s->H[3] = 0x10325476; s->H[4] = 0xc3d2e1f0;
+}
+
+/* Streaming mode: run one 64-byte block through the SHA-1 compression function. */
+static void sha1_compress(IPodTouchSHA1State *s, const uint8_t *block)
+{
+	SHA_CTX c;
+	memset(&c, 0, sizeof(c));
+	c.h0 = s->H[0]; c.h1 = s->H[1]; c.h2 = s->H[2]; c.h3 = s->H[3]; c.h4 = s->H[4];
+	SHA1_Transform(&c, block);
+	s->H[0] = c.h0; s->H[1] = c.h1; s->H[2] = c.h2; s->H[3] = c.h3; s->H[4] = c.h4;
 }
 
 static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
 {
 	IPodTouchSHA1State *s = (IPodTouchSHA1State *)opaque;
 
-    //fprintf(stderr, "%s: offset 0x%08x\n", __FUNCTION__, offset);
+    if (getenv("SHA1TRACE2")) {
+        fprintf(stderr, "SHA R %02x\n", (unsigned)offset);
+    }
 
 	switch(offset) {
 		case SHA_CONFIG:
@@ -49,7 +63,9 @@ static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
 			return s->insize;
 		/* Hash result ouput */
 		case 0x20 ... 0x34:
-			//fprintf(stderr, "Hash out %08x\n",  *(uint32_t *)&s->hashout[offset - 0x20]);
+			if (s->stateful) {
+				return offset < 0x34 ? bswap32(s->H[(offset - 0x20) / 4]) : 0;
+			}
             if(!s->hash_computed) {
                 /*
                  * How many of the buffered bytes are the message?
@@ -165,11 +181,26 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 {
     IPodTouchSHA1State *s = (IPodTouchSHA1State *)opaque;
 
-    //fprintf(stderr, "%s: offset 0x%08x value 0x%08x\n", __FUNCTION__, offset, value);
+    if (getenv("SHA1TRACE2")) {
+        fprintf(stderr, "SHA W %02x = %08x (buf=%u)\n", (unsigned)offset, (unsigned)value, s->buffer_ind);
+    }
 
 	switch(offset) {
 		case SHA_CONFIG:
-			if(value == 0x2 || value == 0xa)
+			if (s->stateful && (value == 0x2 || value == 0xa)) {
+				uint8_t blk[0x40];
+				if (s->hw_buffer_dirty) {
+					sha1_compress(s, (uint8_t *)s->hw_buffer);
+					memset(s->hw_buffer, 0, 0x40);
+					s->hw_buffer_dirty = false;
+				}
+				if (s->memory_mode) {
+					for (uint32_t i = 0; i < s->insize / 0x40; i++) {
+						cpu_physical_memory_read(s->memory_start + i * 0x40, blk, 0x40);
+						sha1_compress(s, blk);
+					}
+				}
+			} else if(value == 0x2 || value == 0xa)
 			{
                 if(s->hw_buffer_dirty) {
                     flush_hw_buffer(s);
@@ -206,6 +237,10 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 		case SHA_INSIZE:
             assert(value <= SHA1_BUFFER_SIZE);
 			s->insize = value;
+			break;
+		case 0x20 ... 0x33:             /* H0..H4; 0x34 would be past H[] */
+			s->stateful = true;
+			s->H[(offset - 0x20) / 4] = bswap32(value);
 			break;
 		case 0x40 ... 0x7c:
             // write to the hardware buffer

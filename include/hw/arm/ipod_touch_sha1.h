@@ -34,6 +34,13 @@ typedef struct IPodTouchSHA1State {
     bool hash_computed;
     bool memory_fed;   /* message came in via memory mode, so it is unpadded */
     SHA_CTX ctx;
+    /*
+     * Streaming mode, entered when the guest writes the state registers
+     * (0x20..0x30): the block is then a plain SHA-1 compression engine. H is the
+     * running state; the guest pads and chunks the message itself.
+     */
+    bool stateful;
+    uint32_t H[5];
 } IPodTouchSHA1State;
 
 #endif
