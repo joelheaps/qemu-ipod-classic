@@ -11,6 +11,7 @@
 #include "hw/hw.h"
 #include "qapi/error.h"
 #include "hw/intc/pl192.h"
+#include "migration/vmstate.h"
 
 extern CPUState *getMainCpuEnv(void);
 
@@ -425,13 +426,64 @@ static void pl192_init(Object *obj)
     //sysbus_init_irq(sbd, s->fiq);
 }
 
+/*
+ * Recompute the parent IRQ/FIQ line levels from the loaded state. The sysbus
+ * output lines are not part of the migrated stream, so without this the CPU
+ * would come back from a snapshot with the VIC's rawintr restored but its own
+ * IRQ line low, and an interrupt pending at save time would never reach the
+ * core.
+ */
+static int pl192_post_load(void *opaque, int version_id)
+{
+    PL192State *s = opaque;
+
+    /*
+     * daisy_callback is a runtime back-pointer; restore it from the fixed
+     * topology. Only the downstream controller has a daisy_source, and
+     * daisy_callback is only read while a daisy interrupt is current or being
+     * acknowledged, which cannot happen unless the source actually propagated.
+     */
+    s->daisy_callback = s->daisy_source;
+    pl192_update(s);
+    return 0;
+}
+
+static const VMStateDescription vmstate_pl192 = {
+    .name = "pl192",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = pl192_post_load,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(irq_status, PL192State),
+        VMSTATE_UINT32(fiq_status, PL192State),
+        VMSTATE_UINT32(rawintr, PL192State),
+        VMSTATE_UINT32(intselect, PL192State),
+        VMSTATE_UINT32(intenable, PL192State),
+        VMSTATE_UINT32(softint, PL192State),
+        VMSTATE_UINT32(protection, PL192State),
+        VMSTATE_UINT32(sw_priority_mask, PL192State),
+        VMSTATE_UINT32_ARRAY(vect_addr, PL192State, PL192_INT_SOURCES),
+        VMSTATE_UINT32_ARRAY(vect_priority, PL192State, PL192_INT_SOURCES),
+        VMSTATE_UINT32(address, PL192State),
+        VMSTATE_UINT32(current, PL192State),
+        VMSTATE_UINT32(current_highest, PL192State),
+        VMSTATE_INT32(stack_i, PL192State),
+        VMSTATE_UINT32_ARRAY(priority_stack, PL192State, PL192_PRIO_LEVELS + 1),
+        VMSTATE_UINT8_ARRAY(irq_stack, PL192State, PL192_PRIO_LEVELS + 1),
+        VMSTATE_UINT32(priority, PL192State),
+        VMSTATE_UINT32(daisy_vectaddr, PL192State),
+        VMSTATE_UINT32(daisy_priority, PL192State),
+        VMSTATE_UINT8(daisy_input, PL192State),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void pl192_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->reset = pl192_reset;
-    //dc->vmsd = &vmstate_pl192;
-    // TODO save VM
+    dc->vmsd = &vmstate_pl192;
 }
 
 static const TypeInfo pl192_info = {

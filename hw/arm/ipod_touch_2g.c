@@ -276,6 +276,8 @@ static void ipod_touch_machine_init(MachineState *machine)
 
     // // chain VICs together
     nms->vic1->daisy = nms->vic0;
+    /* Fixed topology for pl192_post_load to rebuild daisy_callback. */
+    nms->vic0->daisy_source = nms->vic1;
 
     // init clock 0
     dev = qdev_new("ipodtouch.clock");

@@ -66,6 +66,13 @@ struct PL192State {
     uint32_t daisy_priority;
     PL192State *daisy_callback;
     uint8_t  daisy_input;
+    /*
+     * The controller that feeds this one through the daisy chain, fixed by the
+     * machine at init. daisy_callback is a runtime back-pointer onto whichever
+     * controller most recently raised the daisy line, so it is not migrated;
+     * vmstate_pl192 rebuilds it from this non-migrated topology field instead.
+     */
+    PL192State *daisy_source;
 
     /* Parent interrupts */
     qemu_irq irq;
