@@ -287,6 +287,20 @@ int qemu_plugin_read_register(GByteArray *buf, int reg)
     return cc->gdb_read_register(cpu, buf, reg);
 }
 
+/* Backport of 9.x qemu_plugin_read_memory_vaddr (same debug-read path). */
+bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *buf, size_t len)
+{
+    if (!current_cpu) {
+        return false;
+    }
+    g_byte_array_set_size(buf, len);
+    if (cpu_memory_rw_debug(current_cpu, addr, buf->data, len, false) < 0) {
+        g_byte_array_set_size(buf, 0);
+        return false;
+    }
+    return true;
+}
+
 /*
  * The memory queries allow the plugin to query information about a
  * memory access.

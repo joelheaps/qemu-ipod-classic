@@ -633,6 +633,18 @@ QEMU_PLUGIN_API
 int qemu_plugin_read_register(GByteArray *buf, int reg);
 
 /**
+ * qemu_plugin_read_memory_vaddr() - read guest memory by virtual address
+ * @addr: guest virtual address
+ * @buf: GByteArray resized to @len and filled with the bytes
+ * @len: number of bytes
+ *
+ * Backport of the QEMU 9.x API (debug access through the current vCPU's MMU).
+ * Must be called from a vCPU callback. Returns true on success.
+ */
+QEMU_PLUGIN_API
+bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *buf, size_t len);
+
+/**
  * qemu_plugin_vcpu_for_each() - iterate over the existing vCPU
  * @id: plugin ID
  * @cb: callback function
