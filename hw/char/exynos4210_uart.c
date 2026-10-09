@@ -619,7 +619,33 @@ static int exynos4210_uart_post_load(void *opaque, int version_id)
     Exynos4210UartState *s = (Exynos4210UartState *)opaque;
 
     exynos4210_uart_update_parameters(s);
-    exynos4210_uart_rx_timeout_set(s);
+    /*
+     * Only re-arm the Rx timeout when there is actually something in the Rx
+     * FIFO to time out. Upstream armed it unconditionally, and the timeout
+     * handler then sets UINTSP_RXD and calls update_irq(), which re-asserts
+     * UINTSP_TXD on an empty Tx FIFO too. A restored guest that had no UART
+     * interrupt pending therefore came back straight into an interrupt storm
+     * (iPod classic: VIC0 line 24 held high, the whole guest stuck servicing
+     * it and input dead).
+     */
+    if (fifo_elements_number(&s->rx) > 0) {
+        exynos4210_uart_rx_timeout_set(s);
+    } else {
+        timer_del(s->fifo_timeout_timer);
+    }
+
+    /*
+     * The IRQ output is a qemu_irq line and is not part of the migrated state,
+     * so re-drive it from the restored UINTP. Recomputing it with
+     * update_irq() would be wrong here: that would assert UINTSP_TXD for an
+     * empty Tx FIFO, which is a transient the guest clears, not persistent
+     * state.
+     */
+    if (s->reg[I_(UINTP)]) {
+        qemu_irq_raise(s->irq);
+    } else {
+        qemu_irq_lower(s->irq);
+    }
 
     return 0;
 }
