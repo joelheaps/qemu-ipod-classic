@@ -213,6 +213,48 @@ static GArray *regpcs;              /* array of RegPC */
 static guint64 regpc_cap = 400;    /* max logged reg lines per watched PC */
 static GByteArray *reg_buf;        /* scratch for qemu_plugin_read_register */
 
+/*
+ * BINARY BUFFER DUMP (audump=). At a named PC read a BASE register and a LEN
+ * register, then write the LEN bytes of guest memory at [BASE+OFF] to PATH,
+ * overwriting it each hit. This is the host-side handoff the video decoder
+ * model needs: a TCG plugin cannot call a device, so it dumps the guest's
+ * access unit / codec config to a file and the device (env-gated, default off)
+ * reads that file. Same register-authority rule as regpc: only at a TB head.
+ *   audump=0xADDR:BASE_REG:OFF:LEN_REG:PATH
+ * REG indices are gdb core-register numbers (0..12=r0..r12, 13=sp, 14=lr).
+ */
+typedef struct {
+    uint64_t pc;
+    int base_reg;       /* register holding the source address */
+    int64_t off;        /* byte offset added to base */
+    int len_reg;        /* register holding the byte count */
+    char *path;         /* output file, truncated per hit */
+    guint64 hits;       /* TB-head hits */
+    guint64 dumps;      /* files written */
+    guint64 mid_hits;   /* seen mid-TB (regs unreliable, skipped) */
+    bool mid_warned;
+} AuDump;
+static GArray *audumps;
+
+/* Write LEN bytes of guest memory at VA to PATH (binary, truncate). */
+static bool audump_write(const char *path, uint64_t va, uint32_t len)
+{
+    if (len == 0 || len > (64u << 20)) {
+        return false;
+    }
+    g_byte_array_set_size(mem_buf, 0);
+    if (!qemu_plugin_read_memory_vaddr(va, mem_buf, len)) {
+        return false;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        return false;
+    }
+    size_t n = fwrite(mem_buf->data, 1, mem_buf->len, f);
+    fclose(f);
+    return n == mem_buf->len;
+}
+
 /* Read a 32-bit guest core register by gdb index. iPod ARM is little-endian. */
 static bool read_reg32(int reg, uint32_t *out)
 {
@@ -382,6 +424,26 @@ static void vcpu_mem_at_pc(unsigned int cpu_index, qemu_plugin_meminfo_t info,
 
 static void vcpu_regpc_exec(unsigned int cpu_index, void *udata);
 static void vcpu_regpc_mid(unsigned int cpu_index, void *udata);
+static void vcpu_audump_exec(unsigned int cpu_index, void *udata);
+static void vcpu_audump_mid(unsigned int cpu_index, void *udata);
+
+/* Install a binary-dump callback for every audump probe at va. */
+static void register_audump_probes(struct qemu_plugin_insn *insn, uint64_t va,
+                                   bool is_head)
+{
+    if (!audumps) {
+        return;
+    }
+    for (guint i = 0; i < audumps->len; i++) {
+        AuDump *ad = &g_array_index(audumps, AuDump, i);
+        if (ad->pc != va) {
+            continue;
+        }
+        qemu_plugin_register_vcpu_insn_exec_cb(
+            insn, is_head ? vcpu_audump_exec : vcpu_audump_mid,
+            is_head ? QEMU_PLUGIN_CB_R_REGS : QEMU_PLUGIN_CB_NO_REGS, ad);
+    }
+}
 
 /* Install a register-read callback for every probe at va. Multiple probes may
  * share a PC (e.g. two memr= fields of the same object); each gets its own
@@ -473,6 +535,49 @@ static void vcpu_regpc_exec(unsigned int cpu_index, void *udata)
     fflush(out);
 }
 
+/* audump at a TB head: read base+len registers, dump [base+off, +len) to file. */
+static void vcpu_audump_exec(unsigned int cpu_index, void *udata)
+{
+    AuDump *ad = (AuDump *)udata;
+    uint32_t base = 0, len = 0;
+
+    ad->hits++;
+    if (!read_reg32(ad->base_reg, &base) || !read_reg32(ad->len_reg, &len)) {
+        return;
+    }
+    uint64_t va = (uint32_t)(base + ad->off);
+    if (audump_write(ad->path, va, len)) {
+        ad->dumps++;
+        if (ad->dumps <= 200) {
+            gint64 now = g_get_monotonic_time();
+            if (t0 == 0) {
+                t0 = now;
+            }
+            fprintf(out, "PCTRACE +%8" PRId64 "us audump %s base=0x%08"
+                    PRIx32 " len=%" PRIu32 "\n",
+                    now - t0, ad->path, base, len);
+            fflush(out);
+        }
+    } else {
+        fprintf(out, "PCTRACE audump %s pc=0x%08" PRIx64 " base=0x%08" PRIx32
+                " off=0x%" PRIx64 " len=0x%" PRIx32 " -> FAILED (unmapped?)\n",
+                ad->path, ad->pc, base, (uint64_t)ad->off, len);
+        fflush(out);
+    }
+}
+
+static void vcpu_audump_mid(unsigned int cpu_index, void *udata)
+{
+    AuDump *ad = (AuDump *)udata;
+    ad->mid_hits++;
+    if (!ad->mid_warned) {
+        ad->mid_warned = true;
+        fprintf(out, "PCTRACE WARNING: audump pc=0x%08" PRIx64 " seen mid-TB; "
+                "dump skipped (env unreliable off a TB head in 8.2)\n", ad->pc);
+        fflush(out);
+    }
+}
+
 /* Mid-TB sighting: env is NOT authoritative here (8.2), so refuse to read. */
 static void vcpu_regpc_mid(unsigned int cpu_index, void *udata)
 {
@@ -522,6 +627,7 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
          * same PC is registered on a count-and-warn callback that never reads.
          * Every probe at this PC is installed (multi-probe safe). */
         register_regpc_probes(insn, va, i == 0);
+        register_audump_probes(insn, va, i == 0);
         /* Range trace only cares about the TB's first instruction. */
         if (i == 0 && range_hi && va >= range_lo && va < range_hi) {
             RangePC *r = g_hash_table_lookup(range_tbl, &va);
@@ -574,6 +680,20 @@ static void plugin_exit(qemu_plugin_id_t id, void *p)
             MemwPC *m = &g_array_index(memwpc, MemwPC, i);
             fprintf(out, "      %-14s pc=0x%08" PRIx64 "  stores=%" PRIu64 "\n",
                     m->label, m->pc, m->count);
+        }
+    }
+    if (audumps) {
+        fprintf(out, "  --- binary buffer dumps ---\n");
+        for (guint i = 0; i < audumps->len; i++) {
+            AuDump *ad = &g_array_index(audumps, AuDump, i);
+            fprintf(out, "      audump pc=0x%08" PRIx64 " base=r%d off=0x%"
+                    PRIx64 " len=r%d -> %s  hits=%" PRIu64 " dumps=%" PRIu64,
+                    ad->pc, ad->base_reg, (uint64_t)ad->off, ad->len_reg,
+                    ad->path, ad->hits, ad->dumps);
+            if (ad->mid_hits) {
+                fprintf(out, "  [mid-TB skipped=%" PRIu64 "]", ad->mid_hits);
+            }
+            fprintf(out, "\n");
         }
     }
     if (regpcs) {
@@ -660,6 +780,23 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
             g_array_append_val(memw_skip, pc);
         } else if (!g_strcmp0(kv[0], "regcap") && kv[1]) {
             regpc_cap = g_ascii_strtoull(kv[1], NULL, 10);
+        } else if (!g_strcmp0(kv[0], "audump") && kv[1]) {
+            /* audump=0xADDR:BASE_REG:OFF:LEN_REG:PATH : binary memory dump */
+            g_auto(GStrv) f = g_strsplit(kv[1], ":", 5);
+            if (f[0] && f[1] && f[2] && f[3] && f[4]) {
+                AuDump ad = { g_ascii_strtoull(f[0], NULL, 16),
+                              (int)g_ascii_strtoull(f[1], NULL, 10),
+                              g_ascii_strtoll(f[2], NULL, 16),
+                              (int)g_ascii_strtoull(f[3], NULL, 10),
+                              g_strdup(f[4]), 0, 0, 0, false };
+                if (!audumps) {
+                    audumps = g_array_new(false, false, sizeof(AuDump));
+                }
+                g_array_append_val(audumps, ad);
+            } else {
+                fprintf(stderr, "pctrace: bad audump=%s (want "
+                        "ADDR:BASE_REG:OFF:LEN_REG:PATH)\n", kv[1]);
+            }
         } else if (!g_strcmp0(kv[0], "regpc") && kv[1]) {
             /* regpc=0xADDR:LABEL : log LR+r0..r3+sp at ADDR (unconditional) */
             uint64_t a; char *l;
@@ -776,9 +913,9 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     }
 
     if (watch->len == 0 && !(regpcs && regpcs->len) && !(memwpc && memwpc->len)
-        && !memw_hi && !range_hi) {
+        && !memw_hi && !range_hi && !(audumps && audumps->len)) {
         fprintf(stderr, "pctrace: nothing to watch (use pc=/regpc=/sendex=/"
-                        "memw=/memwpc=/range= or drop nodefault)\n");
+                        "memw=/memwpc=/range=/audump= or drop nodefault)\n");
         return -1;
     }
 
@@ -793,6 +930,15 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         fprintf(out, "    mem-write watch 0x%08" PRIx64 "-0x%08" PRIx64
                 " (store PC+addr, always-on, cap=%" PRIu64 ")\n",
                 memw_lo, memw_hi, memw_cap);
+    }
+    if (audumps) {
+        for (guint i = 0; i < audumps->len; i++) {
+            AuDump *ad = &g_array_index(audumps, AuDump, i);
+            fprintf(out, "    binary dump (audump) @0x%08" PRIx64
+                    "  base=r%d off=0x%" PRIx64 " len=r%d -> %s\n",
+                    ad->pc, ad->base_reg, (uint64_t)ad->off, ad->len_reg,
+                    ad->path);
+        }
     }
     if (regpcs) {
         for (guint i = 0; i < regpcs->len; i++) {
