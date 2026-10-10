@@ -74,6 +74,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicSM1State, IPOD_CLASSIC_SM1)
 #define S5L8702_SM1_INTEN       0xa8c
 #define S5L8702_SM1_INTEN_FRAME (1u << 2)
 
+/* Sub-block 4 chain pointer | go (0x0808ed1c writes 0x08b29855). */
+#define S5L8702_SM1_CHAIN       0x100
+
 #define S5L8702_SM1_STAT        0xa98
 #define S5L8702_SM1_STAT_READY  (1u << 2)
 /*
@@ -162,9 +165,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicSM1State, IPOD_CLASSIC_SM1)
  * cumulative count instead walked the pointer out of RAM after ~1.9 s and the
  * resulting data abort froze the whole native render path. wiki/19 s11.26.
  */
-#define S5L8702_SM1_POS_RING_FRAMES  (0x20000 / 4)
+/*
+ * Reported ring size, a MODEL CHOICE: the real ring size is undetermined. The
+ * top 32 KiB of IRAM1 (0x22038000..) is the engine's output-slot area, so the
+ * guest's UI-sound ring writes (up to ~5 KiB from the reported offset, they do
+ * not wrap inside the copy) must stay below 0x22038000: 22 bursts of 1024
+ * frames leave 10 KiB of headroom under it.
+ */
+#define S5L8702_SM1_POS_RING_FRAMES  (22 * 1024)
 
 struct IPodClassicI2SState;
+struct Sm1Dec;
 
 struct IPodClassicSM1State {
     SysBusDevice parent_obj;
@@ -212,9 +223,9 @@ struct IPodClassicSM1State {
     qemu_irq irq;
 
     /*
-     * Raise the line as playback advances (SM1_IRQ=1). Off by default: the
-     * trigger condition is still being characterised, so the default build
-     * stays byte-identical to the measured baseline.
+     * Raise the line as playback advances; on by default (SM1_IRQ=0 disables,
+     * SM1_IRQ=2 pulses regardless of the guest's arming). The trigger condition
+     * is only partly characterised, so this is a model approximation.
      */
     bool     irq_enabled;
     bool     irq_always;    /* SM1_IRQ=2: pulse regardless of the guest's arming */
@@ -225,6 +236,10 @@ struct IPodClassicSM1State {
     uint64_t last_pos;      /* stream position at the previous tick */
     uint64_t irqs;          /* lines raised, for the trace */
     uint64_t ticks;         /* timer ticks, for the idle diagnostic */
+    struct Sm1Dec *dec;     /* frame decoder, created on first frame (not migrated) */
+    uint8_t dec_w;          /* next output slot the engine fills */
+    bool dec_irq_level;     /* decoder frame-done line held until acknowledged */
+    bool dec_published;     /* slot states initialised for this chain */
 };
 
 /* Give SM1 the I2S whose playback its position registers track. */

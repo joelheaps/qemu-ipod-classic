@@ -64,6 +64,7 @@
 #include "qemu/timer.h"
 #include "hw/arm/ipod_classic/ipod_classic_sm1.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
+#include "hw/arm/ipod_classic/ipod_classic_sm1_dec.h"
 
 /*
  * True and returns the value if `offset` is one of the eight per-channel
@@ -134,6 +135,14 @@ static bool sm1_pos_reg(IPodClassicSM1State *s, hwaddr offset, uint32_t *out)
                             (unsigned long long)pos_wrap);
                 }
             }
+            /*
+             * Progress is reported per DMA burst (1024 stereo frames = the
+             * 2048 x 16-bit LLI chunk), not per sample: the guest copies whole
+             * 4 KiB blocks at this offset, and a position inside a burst made a
+             * block straddle the end of the ring and overrun into the slot
+             * array above it.
+             */
+            pos &= ~(uint64_t)1023;
             pos = pos_wrap ? (pos % pos_wrap) : 0;
         }
         /* +0xa48 is the position the copy uses; +0xa44 is its companion,
@@ -191,7 +200,13 @@ static void sm1_irq_off(void *opaque)
 }
 
 /*
- * THE ENGINE'S MEMORY-SIDE STATE (SM1_SLOTS=1).
+ * THE ENGINE'S MEMORY-SIDE STATE (SM1_SLOTS=1) -- DEV TOGGLE, DEFAULT OFF.
+ *
+ * This publishes INVENTED engine geometry (an enable mask, slot count and
+ * per-slot "ready" halfwords) into IRAM1. It writes no PCM: it is not a codec
+ * and it does not make audio. It exists only so the buffer-return handshake
+ * can be experimented with while the real engine state is UNDETERMINED. Off by
+ * default so the default build is byte-for-byte as measured.
  *
  * The render pump stops after eight invocations because 0x080a3c00 -- the
  * "give me the next render buffer" call -- returns 0 where 0x22006358 requires
@@ -235,29 +250,45 @@ static void sm1_irq_off(void *opaque)
  */
 #define SM1_SLOT_DESC        0x2203ff28   /* [table+4]  engine descriptor  */
 #define SM1_SLOT_ARRAY       0x22038000   /* [table+12] per-slot state     */
-#define SM1_SLOT_PCM         0x22038100   /* [table+16] the PCM ring       */
 #define SM1_SLOT_FRAMES      2048         /* frames per slot (DMA burst)   */
 #define SM1_SLOT_COUNT_MAX   7            /* 7 * 4096 = 28 KiB below 0x…ff00 */
+#define SM1_SLOT_COUNT_DEFAULT 2          /* wiki/19 s11.119: 2 does not stomp IRAM1 */
 
 /*
  * HOW MUCH OF IRAM1 IS ACTUALLY OURS is not something the firmware tells us --
  * we publish the geometry, so we also choose how much memory it implies. Seven
- * slots claims 28 KiB from 0x22038100, and MEASURED, filling all of it freezes
+ * slots claims 28 KiB from 0x22038100, and MEASURED, declaring all of it freezes
  * the user interface mid-transition into Now Playing while the audio keeps
- * playing: the screen renders fully with SM1_SLOTS alone, and with SM1_DECODE
- * added it stops half-drawn. Publishing the state is harmless; WRITING 28 KiB
- * of PCM through it is not, which says the ring is smaller than we claimed and
- * the tail lands on something else's memory.
+ * playing. Publishing the state is the whole toggle; how large a ring the real
+ * engine keeps is undetermined, which is why the geometry is not a default.
  *
  * SM1_NSLOTS sweeps it so the real size can be found by bisection instead of
  * guessed.
  */
+/*
+ * MASTER SWITCH. SM1=0 returns the block to the register-only model (including
+ * no line-18 report). It is off by default, i.e. the device model is active;
+ * the individual SM1_* knobs remain as overrides for experiments (SM1_SLOTS=1,
+ * SM1_IRQ=0, ...). Only the state publication (SM1_SLOTS) is default-off; the
+ * VIC line-18 report and the playback-position register are model
+ * approximations and stay on.
+ */
+static bool sm1_master_off(void)
+{
+    static int off = -1;
+    if (off < 0) {
+        const char *e = getenv("SM1");
+        off = (e && *e && *e == '0') ? 1 : 0;
+    }
+    return off == 1;
+}
+
 static unsigned sm1_slot_count(void)
 {
     static int n = -1;
     if (n < 0) {
         const char *e = getenv("SM1_NSLOTS");
-        n = (e && *e) ? atoi(e) : SM1_SLOT_COUNT_MAX;
+        n = (e && *e) ? atoi(e) : SM1_SLOT_COUNT_DEFAULT;
         if (n < 1) {
             n = 1;
         }
@@ -268,19 +299,17 @@ static unsigned sm1_slot_count(void)
     return (unsigned)n;
 }
 #define SM1_SLOT_COUNT       sm1_slot_count()
-#define SM1_SLOT_BYTES       (SM1_SLOT_FRAMES * 2)   /* = the firmware's own
-                                          * derivation: size = samples * 2 */
 
 static bool sm1_slots_on(void)
 {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("SM1_SLOTS");
-        on = (e && *e && *e != '0') ? 1 : 0;
+        on = (!sm1_master_off() && e && *e && *e != '0') ? 1 : 0;
         if (on) {
-            fprintf(stderr, "SM1_SLOTS: publicando el estado del motor en IRAM1 "
-                    "(%d ranuras de %d marcos)\n",
-                    SM1_SLOT_COUNT, SM1_SLOT_FRAMES);
+            fprintf(stderr, "SM1_SLOTS: DEV TOGGLE -- publishing invented engine "
+                    "geometry in IRAM1 (%d slots of %d frames); no PCM is "
+                    "written\n", SM1_SLOT_COUNT, SM1_SLOT_FRAMES);
         }
     }
     return on == 1;
@@ -310,6 +339,11 @@ static int sm1_publish_slots(IPodClassicSM1State *s)
     /* The slot count the firmware wraps its index against. */
     h = cpu_to_le16(SM1_SLOT_COUNT);
     cpu_physical_memory_write(SM1_SLOT_ARRAY + 2, &h, 2);
+
+    /* Per-slot stride in halfwords, read by getdata from the slot block at +4
+     * (see the decoder below): buffers are SM1_SLOT_FRAMES*2 bytes apart. */
+    h = cpu_to_le16(SM1_SLOT_FRAMES);
+    cpu_physical_memory_write(SM1_SLOT_ARRAY + 4, &h, 2);
 
     /*
      * FREEING SLOTS AT THE RATE PLAYBACK ACTUALLY CONSUMES THEM.
@@ -359,6 +393,177 @@ static int sm1_publish_slots(IPodClassicSM1State *s)
     return freed_now;
 }
 
+static int sm1trace = -1;
+
+static bool sm1_trace_on(void)
+{
+    if (sm1trace < 0) {
+        const char *e = getenv("SM1TRACE");
+        sm1trace = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return sm1trace == 1;
+}
+
+/*
+ * FRAME DECODE (sub-block 4) -- what the engine does with a submitted frame.
+ *
+ * MEASURED guest protocol (retailOS 2.0.5):
+ *  - the guest writes the chain pointer | 1 to +0x100 once; the chain entry
+ *    (desc) is {0, ctrl, buf}: ctrl = frame_len << 16 | flags (built by
+ *    0x080d463c, sub-block 4 branch), buf = the frame bytes, bit 31 set (an
+ *    uncached alias of the physical address);
+ *  - per frame the guest only rewrites desc[1]/buf (pcm_push 0x0809a898), then
+ *    waits for the frame-done interrupt (VIC line 18) and reads the decoded PCM
+ *    from the output slot ring that 0x080bdda8 walks: header 0x2203ff28
+ *    {u16 enable mask, u16 0}, slot array 0x22038000 {+2 slot count, +4 stride
+ *    in halfwords, +10+4*i state (1 = ready), +12+4*i halfword count},
+ *    buffers 0x22038100 + i*stride*2. It sets state 0 once consumed.
+ *    (The stride lives in the SLOT BLOCK at +4, not in the header: getdata
+ *    reads `ldrh r1,[r1,#4]` with r1 = [table+0xc] = 0x22038000. Publishing it
+ *    only to the header left stride 0, so every slot read the same buffer.)
+ *  - the guest-written enable word 0x2203ff00 selects the codec: low bits 0x7
+ *    is the AAC setup (0x0809b0a0) and +6 holds the MPEG-4 sampling-frequency
+ *    index (the rate -> code table at 0x0809b0b0..0x0809b19c is exactly that
+ *    table).
+ *
+ * The model consumes the chain entry on each tick when the output slot is free:
+ * decode, write PCM and the slot state, zero the descriptor length (the entry is
+ * consumed, as a DMA descriptor's completion write-back would), then report
+ * frame-done on line 18. INFERRED (not measured on silicon): the descriptor
+ * length write-back, the slot count/stride we choose (the guest reads them
+ * back), and that codecs other than the AAC enable word are unsupported here.
+ * SM1_DECODE=0 disables (default on when built with libavcodec).
+ */
+#define SM1_CTL          0x2203ff00
+#define SM1_DEC_CAP      4096        /* halfwords per slot (HE-AAC frame)   */
+#define SM1_DEC_SLOTS    2            /* power of two (the guest wraps its index) */
+#define SM1_SLOT_BUF     0x22038100
+
+static bool sm1_decode_on(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SM1_DECODE");
+        on = (!sm1_master_off() && sm1_dec_available() &&
+              !(e && *e && *e == '0')) ? 1 : 0;
+        fprintf(stderr, "SM1_DECODE: %s\n", on ? "frame decoder on (libavcodec)"
+                : "off (no PCM is produced)");
+    }
+    return on == 1;
+}
+
+static uint16_t sm1_rd16(hwaddr a)
+{
+    uint16_t v;
+    cpu_physical_memory_read(a, &v, 2);
+    return le16_to_cpu(v);
+}
+
+static void sm1_wr16(hwaddr a, uint16_t v)
+{
+    v = cpu_to_le16(v);
+    cpu_physical_memory_write(a, &v, 2);
+}
+
+/* Consume the pending frame, if any. True when a slot was published. */
+static bool sm1_decode_frame(IPodClassicSM1State *s)
+{
+    uint32_t chain = s->reg[S5L8702_SM1_CHAIN / 4];
+    uint32_t d[3];
+    uint8_t frame[SM1_DEC_CAP];
+    int16_t pcm[SM1_DEC_CAP];
+    unsigned w = s->dec_w;
+    hwaddr arr = SM1_SLOT_ARRAY;
+    uint32_t len;
+    int n;
+
+    if (!(chain & 1)) {
+        return false;
+    }
+    cpu_physical_memory_read(chain & ~3u, d, sizeof(d));
+    len = le32_to_cpu(d[1]) >> 16;
+    if (sm1_trace_on()) {
+        fprintf(stderr, "SM1DEC chain=0x%08x desc={%08x,%08x,%08x} len=%u "
+                "slot%u state=%u\n", chain, le32_to_cpu(d[0]),
+                le32_to_cpu(d[1]), le32_to_cpu(d[2]), len, w,
+                sm1_rd16(arr + 10 + w * 4));
+    }
+    if (len == 0 || len > sizeof(frame)) {
+        return false;
+    }
+    if (!s->dec_published) {
+        for (unsigned i = 0; i < SM1_DEC_SLOTS; i++) {
+            sm1_wr16(arr + 10 + i * 4, 0);
+        }
+        w = s->dec_w = 0;
+        s->dec_published = true;
+    }
+    if (sm1_rd16(arr + 10 + w * 4) != 0) {
+        return false;                    /* output slot still owned by the guest */
+    }
+    cpu_physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, frame, len);
+    if (!s->dec) {
+        s->dec = sm1_dec_new();
+    }
+    if ((sm1_rd16(SM1_CTL) & 7) == 7) {
+        n = sm1_dec_frame(s->dec, SM1_CODEC_AAC, sm1_rd16(SM1_CTL + 6) & 15,
+                          frame, len, pcm, SM1_DEC_CAP);
+    } else {
+        n = -1;
+        qemu_log_mask(LOG_UNIMP, "SM1: codec enable word 0x%04x not modelled\n",
+                      sm1_rd16(SM1_CTL));
+    }
+    if (sm1_trace_on()) {
+        fprintf(stderr, "SM1DEC frame len=%u -> n=%d slot%u data %02x%02x%02x%02x%02x%02x\n", len, n, w, frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]);
+    }
+    if (n <= 0) {                        /* no output / bad frame: a silent slot */
+        n = 2048;
+        memset(pcm, 0, n * 2);
+    }
+    {   /* SM1_DEC_DUMP=file: dev aid, appends each decoded frame (s16le) */
+        static FILE *dump;
+        static int tried;
+        if (!tried++ && getenv("SM1_DEC_DUMP")) {
+            dump = fopen(getenv("SM1_DEC_DUMP"), "wb");
+        }
+        if (dump) {
+            fwrite(pcm, 2, n, dump);
+            fflush(dump);
+        }
+        if (dump && getenv("SM1_DEC_DUMP_FRAMES")) {
+            static FILE *fd;
+            if (!fd) {
+                fd = fopen(getenv("SM1_DEC_DUMP_FRAMES"), "wb");
+            }
+            fwrite(&len, 4, 1, fd);
+            fwrite(frame, 1, len, fd);
+            fflush(fd);
+        }
+    }
+    cpu_physical_memory_write(SM1_SLOT_BUF + w * SM1_DEC_CAP * 2, pcm, n * 2);
+    sm1_wr16(SM1_SLOT_DESC + 0, 3);
+    sm1_wr16(SM1_SLOT_DESC + 2, 0);
+    sm1_wr16(SM1_SLOT_DESC + 4, SM1_DEC_CAP);
+    sm1_wr16(arr + 2, SM1_DEC_SLOTS);
+    /*
+     * The per-slot stride getdata (0x080bdda8) actually reads lives in the
+     * slot block at +4, NOT in the header at 0x2203ff2c: getdata computes
+     *     ptr = 0x22038100 + idx * u16[0x22038004] * 2
+     * (ldrh r1,[r1,#4] at 0x080bddfc with r1 = [table+0xc] = 0x22038000).
+     * Leaving it zero collapsed every idx onto 0x22038100, so the guest read
+     * slot0's PCM twice and never consumed slot1's -- the even-frame-doubled /
+     * odd-frame-dropped stutter. Publish the same
+     * stride the buffers are written with (SM1_DEC_CAP halfwords).
+     */
+    sm1_wr16(arr + 4, SM1_DEC_CAP);
+    sm1_wr16(arr + 12 + w * 4, n);
+    sm1_wr16(arr + 10 + w * 4, 1);
+    d[1] = cpu_to_le32(le32_to_cpu(d[1]) & 0xffff);   /* descriptor consumed */
+    cpu_physical_memory_write((chain & ~3u) + 4, &d[1], 4);
+    s->dec_w = (w + 1) % SM1_DEC_SLOTS;
+    return true;
+}
+
 static void sm1_irq_tick(void *opaque)
 {
     IPodClassicSM1State *s = opaque;
@@ -380,6 +585,19 @@ static void sm1_irq_tick(void *opaque)
      * the handler sees a discrete event and a missed one cannot wedge the line.
      */
     s->ticks++;
+    if (sm1_decode_on() && (s->reg[S5L8702_SM1_CHAIN / 4] & 1)) {
+        /* Engine running a chain: frame-done is reported per decoded frame. */
+        if (s->irq_armed && !s->irq_pending && sm1_decode_frame(s)) {
+            s->irq_pending = true;
+            s->last_pos = pos;
+            s->irqs++;
+            s->dec_irq_level = true;     /* held until the guest acknowledges */
+            qemu_irq_raise(s->irq);
+        }
+        timer_mod(s->irq_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  (int64_t)SM1_IRQ_TICK_MS * 1000000);
+        return;
+    }
     /*
      * SM1_IRQ_EVERY overrides how many 5 ms ticks pass between reports.
      *
@@ -465,16 +683,6 @@ static void sm1_irq_tick(void *opaque)
  * watch the handshake -- e.g. to confirm which bring-up path (0x0808170c codec
  * bring-up vs 0x08017378 start/resume) runs and in what order.
  */
-static int sm1trace = -1;
-
-static bool sm1_trace_on(void)
-{
-    if (sm1trace < 0) {
-        const char *e = getenv("SM1TRACE");
-        sm1trace = (e && *e && *e != '0') ? 1 : 0;
-    }
-    return sm1trace == 1;
-}
 
 /*
  * SM1HI=1: report writes ABOVE the modelled 4 KB register page.
@@ -560,7 +768,7 @@ static uint64_t ipod_classic_sm1_read(void *opaque, hwaddr offset,
      * so the handler that triggered on this interrupt still sees it set and
      * signals its event.
      */
-    if (was_pending) {
+    if (was_pending && !s->dec_irq_level) {
         s->irq_pending = false;
         qemu_irq_lower(s->irq);
     }
@@ -738,6 +946,17 @@ static void ipod_classic_sm1_write(void *opaque, hwaddr offset,
     case S5L8702_SM1_CODEC_EN:   /* +0x824 codec enable   */
     case S5L8702_SM1_COMMIT:     /* +0xc48 config commit  */
         s->powered = true;
+        /*
+         * Also the status acknowledge: the guest writes the status bit it has
+         * handled (4 = frame done) here (0x080c1860 after polling +0xa98, and
+         * per frame at 0x080c1878). INFERRED write-1-to-clear. A frame-done line
+         * raised by the decoder stays asserted until this write.
+         */
+        if (s->dec_irq_level && (value & S5L8702_SM1_STAT_READY)) {
+            s->dec_irq_level = false;
+            s->irq_pending = false;
+            qemu_irq_lower(s->irq);
+        }
         break;
     case S5L8702_SM1_RUN:        /* +0x400 start (nonzero) */
         if (value & S5L8702_SM1_RUN_MASK) {
@@ -804,6 +1023,9 @@ static void ipod_classic_sm1_reset(DeviceState *dev)
 
     memset(s->reg, 0, sizeof(s->reg));
     s->powered = false;
+    s->dec_w = 0;
+    s->dec_published = false;
+    s->dec_irq_level = false;
 }
 
 static void ipod_classic_sm1_init(Object *obj)
@@ -816,30 +1038,60 @@ static void ipod_classic_sm1_init(Object *obj)
 
     /*
      * The engine's interrupt line. Always created so the machine can wire it to
-     * VIC0 line 18; only ever RAISED when SM1_IRQ=1, so the default build is
-     * byte-identical to the baseline every prior session measured.
+     * VIC0 line 18; raised on the guest's arming write unless SM1_IRQ=0.
      */
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
 
     const char *e = getenv("SM1_IRQ");
-    s->irq_enabled = e && *e && *e != '0';
+    s->irq_enabled = !sm1_master_off() && !(e && *e && *e == '0');
     s->irq_always = e && *e == '2';
+    /*
+     * Always allocate the timers so they can be described by VMSTATE_TIMER_PTR
+     * regardless of the SM1_IRQ setting; only arm them when the interrupt is
+     * enabled. A timer that is never armed has no effect.
+     */
+    s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sm1_irq_tick, s);
+    s->irq_off_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sm1_irq_off, s);
     if (s->irq_enabled) {
-        s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sm1_irq_tick, s);
-        s->irq_off_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sm1_irq_off, s);
         timer_mod(s->irq_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   (int64_t)SM1_IRQ_TICK_MS * 1000000);
         fprintf(stderr, "SM1_IRQ: engine interrupt armed on VIC0 line 18\n");
     }
 }
 
+static int ipod_classic_sm1_post_load(void *opaque, int version_id)
+{
+    IPodClassicSM1State *s = opaque;
+
+    /* The engine IRQ is a sysbus output; re-drive it from the loaded state. */
+    if (s->irq_pending) {
+        qemu_irq_raise(s->irq);
+    } else {
+        qemu_irq_lower(s->irq);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_classic_sm1 = {
     .name = TYPE_IPOD_CLASSIC_SM1,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = ipod_classic_sm1_post_load,
     .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, IPodClassicSM1State, S5L8702_SM1_REG_WORDS),
         VMSTATE_BOOL(powered, IPodClassicSM1State),
+        VMSTATE_BOOL(irq_enabled, IPodClassicSM1State),
+        VMSTATE_BOOL(irq_always, IPodClassicSM1State),
+        VMSTATE_BOOL(irq_armed, IPodClassicSM1State),
+        VMSTATE_BOOL(irq_pending, IPodClassicSM1State),
+        VMSTATE_UINT64(last_pos, IPodClassicSM1State),
+        VMSTATE_UINT64(irqs, IPodClassicSM1State),
+        VMSTATE_UINT64(ticks, IPodClassicSM1State),
+        VMSTATE_UINT8_V(dec_w, IPodClassicSM1State, 2),
+        VMSTATE_BOOL_V(dec_published, IPodClassicSM1State, 2),
+        VMSTATE_BOOL_V(dec_irq_level, IPodClassicSM1State, 2),
+        VMSTATE_TIMER_PTR(irq_timer, IPodClassicSM1State),
+        VMSTATE_TIMER_PTR(irq_off_timer, IPodClassicSM1State),
         VMSTATE_END_OF_LIST()
     },
 };
