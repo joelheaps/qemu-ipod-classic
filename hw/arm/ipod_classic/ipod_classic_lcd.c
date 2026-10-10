@@ -62,7 +62,6 @@
  * INSTRUMENTATION ONLY -- LCDTRACE=1 in the environment prints every access to
  * this window, with the guest PC that made it, to stderr. Nothing here changes
  * what the model does. Same pattern as ATATRACE=1 in ipod_classic_ata.c.
- * See wiki/11-classic6g-retailos.md sec.3.
  */
 static int lcdtrace = -1;
 static void lcd_trace_totals(void);
@@ -334,8 +333,8 @@ static void panel_frame_go(IPodClassicLCDState *s, uint32_t value)
     /*
      * Instrumentation only, and gated on LCDTRACE on purpose: stderr is the
      * channel the guest firmware itself talks on (it prints
-     * "CPU_exception_handler" there through semihosting), and lesson 1 of
-     * wiki/09-historia-5g.md is to keep that channel readable.
+     * "CPU_exception_handler" there through semihosting), and that channel
+     * has to stay readable.
      */
     if (lcd_trace_on()) {
         fprintf(stderr, "LCDTRACE  frame engine started (+0x70 = 0x%x), "

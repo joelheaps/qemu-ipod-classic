@@ -3,7 +3,7 @@
  *
  * The memory map below is derived from Rockbox's register header
  * firmware/export/s5l87xx.h, resolved for CONFIG_CPU == S5L8702. See
- * wiki/02-s5l8702-hardware.md for the derivation and the per-block notes.
+ * hw/arm/ipod_classic/README.md for the per-block notes and the 8700/8701-only bases.
  */
 
 #ifndef HW_ARM_IPOD_CLASSIC_H
@@ -59,7 +59,7 @@
 /*
  * The bootrom base is not documented by Rockbox (it never runs there). The
  * S5L8720 maps it at 0, and the S5L8702 reset vector is assumed to be the
- * same until we can check against a dump. See wiki/02, "pendiente de confirmar".
+ * same until we can check against a dump. See hw/arm/ipod_classic/README.md, open questions.
  */
 #define BOOTROM_MEM_BASE  0x00000000
 #define BOOTROM_MEM_SIZE  0x00020000
@@ -146,7 +146,7 @@
  * Apple's retailOS installs a VIC handler at index 18 (0x08017378) which reads
  * an SM1 register and signals the event its native render pump waits on, so on
  * this SoC line 18 is the audio engine's. INFERIDO from the handler's own
- * register access; see wiki/19 section 11.25.
+ * register access.
  */
 #define S5L8702_SM1_IRQ      18
 #define S5L8702_USB_FUNC_IRQ 19
@@ -169,8 +169,7 @@
 /*
  * The parameter block the bootrom leaves behind, in the last 256 bytes of
  * IRAM1. Skipping the bootrom means we owe the firmware everything that block
- * would have contained; see wiki/11-classic6g-retailos.md for how each field
- * below was found.
+ * would have contained.
  *
  *   +0x00  eight bytes naming the image that should run: "retailOS",
  *          "diskmode", "diskscan", "softupdt" or "--------". The retailOS

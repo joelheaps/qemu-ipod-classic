@@ -41,8 +41,7 @@
  * dispatches the announcement through [0x08911ad8], which is still 0 at 45 s
  * (measured through the monitor, "xp /1wx 0x08911ad8"), so the message is
  * dropped. The boot still parks in "while (!ready) wait();" at 0x081228c4 and
- * still screendumps 0 lit pixels. See wiki/11-classic6g-retailos.md sec.9 for
- * what actually blocks it.
+ * still screendumps 0 lit pixels.
  *
  * What pin 86 is CALLED is UNDETERMINED: Rockbox does not name it and no
  * datasheet we have covers it. What it DOES in Apple's firmware is verified

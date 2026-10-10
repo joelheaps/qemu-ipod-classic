@@ -2,7 +2,7 @@
  * PP502x DMA engine — one instance per block.
  *
  * See hw/arm/ipod_video/ipod_video_dma.c for the register map and where each
- * bit comes from, and wiki/07-pp502x-hardware.md for the two blocks and their
+ * bit comes from, and hw/arm/ipod_video/README.md for the two blocks and their
  * interrupt lines.
  */
 

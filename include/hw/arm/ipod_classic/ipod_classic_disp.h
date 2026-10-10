@@ -18,8 +18,8 @@
  * ---------------------------------------------------------------- registers
  *
  * Every entry below is either (V) verified from a store or load in the osos
- * whose base register was loaded with the literal 0x38900000 -- the complete
- * list of those twenty-seven sites is in wiki/11 -- or (M) additionally
+ * whose base register was loaded with the literal 0x38900000 (twenty-seven
+ * sites) -- or (M) additionally
  * confirmed by the value seen in a real boot, or (U) undetermined.
  *
  *  +0x000  (M) written 1 by the init path. Meaning UNDETERMINED.

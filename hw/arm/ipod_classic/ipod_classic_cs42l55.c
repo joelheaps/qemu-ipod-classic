@@ -2,7 +2,7 @@
  * Cirrus Logic CS42L55 audio codec, I2C0 slave 0x4A.
  *
  * See include/hw/arm/ipod_classic/ipod_classic_cs42l55.h for the address and
- * protocol, and wiki/14-classic6g-audio.md for the audio path.
+ * protocol, and hw/arm/ipod_classic/README.md for the audio path.
  *
  * The chip is a register-pointer I2C device, exactly like the PMU next to it on
  * the same bus: a write starts with the register number and the pointer

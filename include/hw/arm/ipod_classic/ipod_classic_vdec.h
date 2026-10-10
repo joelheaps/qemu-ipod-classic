@@ -3,8 +3,8 @@
  *
  * The video analogue of the SM1 audio engine (ipod_classic_sm1.h): the ARM
  * front-end parses the H.264 container/SPS/PPS/slice headers and offloads
- * pixel reconstruction to this block. It is undocumented (no entry in
- * wiki/08-s5l8702-fuentes-externas.md, no Rockbox name); the register map here
+ * pixel reconstruction to this block. It is undocumented (no Rockbox or
+ * freemyipod name); the register map here
  * is from the guest submit routine FUN_081b65c4 and the context reset
  * FUN_081b6a14, decompiled with Ghidra. See docs/video-decoder.md.
  *

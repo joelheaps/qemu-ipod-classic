@@ -55,7 +55,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicTimerState, IPOD_CLASSIC_TIMER)
  * NOT MODELLED ON PURPOSE. Adding the register is easy; no source we have says
  * what it reads out of reset, whether it can be stopped, or its exact rate, and
  * a counter invented at the wrong rate is worse than one that is missing --
- * the missing one is noticed. See wiki/11 s.19.3.
+ * the missing one is noticed.
  */
 
 /* Shared status register for the 32-bit timers. */

@@ -15,8 +15,7 @@
  * Readback alone is not cosmetic. Six functions in the osos do
  * read-modify-write on +0x008 and one on +0x200; while this block was
  * create_unimplemented_device() every one of them read zero and dropped every
- * field written before it. That is the same failure mode the DMAC0 note in
- * wiki/11 describes, and it was silently true here too.
+ * field written before it, the same failure mode DMAC0 had.
  *
  * DISPTRACE=1 prints every access below +0x400 with its value and the guest PC,
  * and names the register when we know its name; the 768 gamma words are counted
@@ -233,7 +232,7 @@ static bool disp_alpha_on(void)
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("DISP_ALPHA");
-        /* Source-over is a correctness fix of the compositor (wiki/19 s11.119):
+        /* Source-over is a correctness fix of the compositor:
          * the layers are front-to-back and the 32-bit layer really carries an
          * alpha channel, so dropping it hid the whole Now Playing screen. ON by
          * default; DISP_ALPHA=0 restores the old back-to-front opaque order. */

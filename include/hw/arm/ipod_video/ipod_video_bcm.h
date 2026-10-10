@@ -3,7 +3,7 @@
  *
  * See hw/arm/ipod_video/ipod_video_bcm.c for the port protocol,
  * hw/arm/ipod_video/ipod_video_vc.c for the VideoCore host interface that
- * rides on top of it, and wiki/07-pp502x-hardware.md for where it sits in the
+ * rides on top of it, and hw/arm/ipod_video/README.md for where it sits in the
  * memory map.
  */
 

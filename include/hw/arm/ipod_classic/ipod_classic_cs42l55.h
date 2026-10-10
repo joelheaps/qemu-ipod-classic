@@ -6,7 +6,7 @@
  * does i2c_write(0, 0x94, reg, 1, &data) -- bus 0, 8-bit slave 0x94, a
  * sub-address (register number) then one data byte. Apple's retailOS: the
  * cscodec_write veneer at osos VA 0x0808e1ac loads r0=0x4a and calls the same
- * I2C transfer routine the PMU uses (0x08325a20). See wiki/14.
+ * I2C transfer routine the PMU uses (0x08325a20).
  *
  * To a driver this chip is a 128-register file. Every access is either a plain
  * write or a read-modify-write (Rockbox cscodec_setbits, cs42l55.c:49; Apple's

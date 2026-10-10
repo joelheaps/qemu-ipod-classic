@@ -176,7 +176,7 @@ static void chan_reload(IPodClassicTimerChannel *c)
      * TIMERTRACE=1: what rate does each channel actually end up at?
      *
      * Needed because the audio task is dispatched with 17-21 SECOND gaps where
-     * it should run ~40 times a second (wiki/19 s11.50), and the natural
+     * it should run ~40 times a second, and the natural
      * suspect is a kernel tick that runs far too slowly. PCLK is not modelled
      * -- chan_freq substitutes ECLK for it -- so a channel the guest programmed
      * against PCLK comes out at the wrong rate, and this says by how much.
@@ -339,7 +339,7 @@ static void ipod_classic_timer_write(void *opaque, hwaddr offset,
          * E, free-running at 1 MHz, set up at 0x08324e48 and read at
          * 0x08324e38, and E is 32-bit so its status never lived in CON. The
          * three navtest.sh runs across this change give the same pixel counts.
-         * Who collects is Rockbox and the bare-metal tests. See wiki/11 s.19.2.
+         * Who collects is Rockbox and the bare-metal tests.
          */
         if (new_cfg != old_cfg) {
             chan_reload(c);

@@ -1,8 +1,7 @@
 /*
  * pctrace.c -- non-invasive guest-PC tracer for the iPod-Classic 6G retailOS.
  *
- * Purpose (wiki/19-classic6g-dsp-hle.md, wiki/15-muros-classic6g.md muro 12):
- * follow the audio-player start-up handler WITHOUT stopping the CPU. Attaching
+ * Purpose: follow the audio-player start-up handler WITHOUT stopping the CPU. Attaching
  * gdb to trace the play handler desynchronises the click-wheel input latch
  * (the DOWN/UP packets get reordered while the CPU is halted at a breakpoint),
  * so a SELECT that would otherwise dispatch is lost. A TCG plugin observes the
@@ -17,8 +16,7 @@
  * chain that the key set off, then goes quiet again.
  *
  * Guest VAs here are RUNTIME addresses: file_offset + 0x07FF5068 for the
- * 2.0.5 image (the older 24.9.1.2 image used +0x07FF51B8; wiki/ VAs are for
- * that one). They are what the CPU actually executes, which is exactly what
+ * 2.0.5 image (the older 24.9.1.2 image used +0x07FF51B8). They are what the CPU actually executes, which is exactly what
  * qemu_plugin_insn_vaddr() returns, so no adjustment is needed inside the
  * plugin.  The MMU maps runtime VA = physical - 0xAF98; pctrace's `pc=`/
  * `regpc=`/`memw=` all use that runtime VA, verified against gdb (stocktrace).

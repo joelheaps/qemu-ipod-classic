@@ -2,7 +2,7 @@
  * S5L8702 "SM1" audio clock/stream engine, 0x38500000.
  *
  * See include/hw/arm/ipod_classic/ipod_classic_sm1.h for what the block is and
- * wiki/19-classic6g-dsp-hle.md section 11 for how the map was found. This is the
+ * hw/arm/ipod_classic/README.md for the knobs. This is the
  * real, stateful replacement for the two hand-faked reads (identity magic + a
  * hard-coded "clock ready" bit) that the previous session dropped into
  * ipod_classic.c. Nothing here is a constant pulled out of thin air: every read
@@ -74,7 +74,7 @@
  * (getter 0x08091710, used by 0x08016e44 and 0x080b3104). We advance it from
  * the I2S transmit-sample count -- the real amount of audio clocked out -- as a
  * stereo-frame count, which is the natural "real clock" reading. MEASURED
- * caveat (wiki/19 section 11): on the reachable play path the copy that would
+ * caveat: on the reachable play path the copy that would
  * consume this position (0x08016eb4) is skipped by an upstream gate, so the
  * value is presently inconsequential to the audio that is produced; the true
  * wall is further upstream, at the decoder that never fills the mixer's source.
@@ -96,7 +96,7 @@ static bool sm1_pos_reg(IPodClassicSM1State *s, hwaddr offset, uint32_t *out)
         uint64_t pos = s->i2s ? s->i2s->tx_samples / 2 : 0;
         /*
          * WRAP THE POSITION INTO THE RING. This is the fix for the wall that
-         * fourteen assaults called a "structural deadlock"; see wiki/19 §11.26.
+         * fourteen assaults called a "structural deadlock".
          *
          * MEASURED: the render's output pointer is computed by the firmware as
          *     dest = 0x22020000 + (this position * 4)
@@ -164,8 +164,8 @@ void ipod_classic_sm1_set_i2s(IPodClassicSM1State *s,
  * The engine's "playback advanced" interrupt, VIC0 line 18.
  *
  * On real silicon the audio engine tells the CPU when it has consumed audio;
- * Apple's driver hangs its whole render pump off that report (see the header,
- * and wiki/19 section 11.25). We had no line at all here, so the report could
+ * Apple's driver hangs its whole render pump off that report (see the
+ * header). We had no line at all here, so the report could
  * never arrive. Raise it when the stream position has moved since the last
  * tick -- i.e. when audio really was clocked out -- which is the condition the
  * handler itself checks for (it reads the engine status and tests bit 2, the
@@ -252,7 +252,7 @@ static void sm1_irq_off(void *opaque)
 #define SM1_SLOT_ARRAY       0x22038000   /* [table+12] per-slot state     */
 #define SM1_SLOT_FRAMES      2048         /* frames per slot (DMA burst)   */
 #define SM1_SLOT_COUNT_MAX   7            /* 7 * 4096 = 28 KiB below 0x…ff00 */
-#define SM1_SLOT_COUNT_DEFAULT 2          /* wiki/19 s11.119: 2 does not stomp IRAM1 */
+#define SM1_SLOT_COUNT_DEFAULT 2          /* 2 does not stomp IRAM1 */
 
 /*
  * HOW MUCH OF IRAM1 IS ACTUALLY OURS is not something the firmware tells us --
@@ -856,7 +856,7 @@ static uint64_t ipod_classic_sm1_read(void *opaque, hwaddr offset,
              *
              * Answering a sticky 7 satisfied the power-up poll but made the
              * render skip its own context build forever -- which is exactly the
-             * "missing render-context construction step" wiki/19 s11.25 was
+             * "missing render-context construction step" the audio work was
              * looking for, and why every gate forced downstream revealed the
              * layer below it was also unbuilt.
              *

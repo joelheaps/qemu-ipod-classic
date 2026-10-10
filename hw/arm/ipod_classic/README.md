@@ -1,9 +1,99 @@
-# iPod classic 6G (S5L8702) — audio / Now Playing reference
+# iPod classic 6G (S5L8702) — `-M iPod-Classic`
 
-Terse map of the audio and display device models in this directory. The host-side
-audio HL emulation has been removed (see below); what remains are the SM1 / I2S /
-display models. Guest VAs are runtime addresses; `file_off = VA - 0x07FF5068`.
-See `wiki/19-classic6g-dsp-hle.md` for the measurements behind each claim.
+Hardware reference, device models, env knobs and guest debugging. Guest VAs are 2.0.5 runtime
+addresses; `file_off = VA - 0x07FF5068`. Register-level detail and its evidence live in each device's
+header under `include/hw/arm/ipod_classic/`. Firmware format and the real device: `docs/classic6g-firmware.md`.
+
+## Board
+
+| Part | Chip | Notes |
+|---|---|---|
+| SoC | Samsung S5L8702 (Apple `337S3473`) | ARM926EJ-S, 216 MHz |
+| SDRAM | K4X51163PE | 64 MB |
+| NOR | SST25VF080B, SPI0 | 1 MiB: SysCfg, NOR boot IM3, `flsh` files (`docs/classic6g-firmware.md`) |
+| PMU | NXP PCF50635, I2C0 `0x73` (8-bit `0xE6`) | also RTC, ADC, backlight, hold switch (GPIO2) |
+| Codec | Cirrus Logic CS42L55, I2C0 `0x4A` (8-bit `0x94`) | reset on GPIO 3.3 |
+| "Mikey" | I2C0 `0x39` (8-bit `0x72`) | headphone mic / inline remote, not the wheel; not modelled |
+| Storage | 1.8" PATA HDD, ATA at `0x38700000` | CE-ATA over SDCI is the other strap (`PDAT(11) & 2`); only PATA is modelled |
+| Panel | 320×240 RGB565, MPU/8080 interface | four panel types, `PDAT6[5:4]` (`LCDTYPE`) |
+| Charger | LTC4066 | |
+
+Clocks: OSC0 12 MHz, OSC1 32768 Hz (from the PMU), ECLK 12 MHz (timer reference). Rockbox's plan: CClk 216,
+HClk 108, PClk 54, SM1Clk 27 MHz.
+
+## Memory map
+
+Sources: Rockbox `firmware/export/s5l87xx.h` preprocessed for `CONFIG_CPU==S5L8702`, freemyipod, and Apple's
+code for the blocks neither names. Several `s5l87xx.h` bases are S5L8700/8701 only; the table gives the 8702 value.
+
+| Region | Base | Size |
+|---|---|---|
+| SDRAM (cached) | `0x08000000` | 64 MB |
+| SDRAM (uncached alias, bit 31) | `0x88000000` | 64 MB. The guest programs DMAC0 with the cached view and runs on the uncached one, and hands SHA-1 uncached addresses |
+| IRAM0 | `0x22000000` | 128 KB; also aliased at `0x0`, where the ARM926 takes exceptions |
+| IRAM1 | `0x22020000` | 128 KB (64 KB on the S5L8720); last 256 B at `0x2203FF00` = boot info block |
+| Bootrom | `0x20000000` | 50 or 64 KiB (unreconciled); locked after boot, no dump exists |
+| Peripheral window | `0x38000000`..`0x3FFFFFFF` | the retailOS maps all of it uncached, so an unmapped address is a data abort: an `-d unimp` floor sits under the whole window |
+
+| Base | Block | IRQ | Model |
+|---|---|---|---|
+| `0x38000000` | SHA-1 | 40 | `ipodtouch.sha1` (same register map); `SHA1_OFF` = stub |
+| `0x38100000` | MIU | | unimp |
+| `0x38200000` | DMAC0 (PL080) | 16 | `hw/dma/pl080.c`, 4 KB window, system memory as master port |
+| `0x38300000` | LCD interface + panel | 14 | `ipod_classic_lcd.c` |
+| `0x38400000` | USB OTG (DWC) | 19 | unimp |
+| `0x38500000` | SM1 audio engine | 18 | `ipod_classic_sm1.c` (below) |
+| `0x38700000` | ATA | 29 | `ipod_classic_ata.c`: Apple's bridge (a register read starts a cycle; result in `ATA_PIO_RDATA`), PIO + flat DMA |
+| `0x38900000` | display pipe / compositor | | `ipod_classic_disp.c`. Not in any public source; map from Apple's code (`ipod_classic_disp.h`) |
+| `0x38A00000` | NAND/FMI (`ATA_UNKNOWN_BASE`) | 20 | unimp; `+0x2000` NAND ECC |
+| `0x38B00000` | SDCI (CE-ATA) | 44 | unimp |
+| `0x38C00000` | AES (bus master) | 39 | unimp |
+| `0x38E00000` | VIC0 / VIC1 (`+0x1000`), PL192 | | `hw/intc/pl192.c`; the retailOS dispatcher at `0x22004DA0` reads both banks with no cross-condition |
+| `0x38E02000` | edge IC | | `ipod_classic_edgeic.c`: per-source rising-edge latch, `+0x4` enable, `+0xc` W1C; bit 3 = video decoder done → VIC1 line 3 (35) |
+| `0x39000000` / `0x3F000000` | CalmADM2E DSP SFR / data | | unimp. The retailOS never touches either (its `0x3F000000` literals are `0.5f`) |
+| `0x39300000` | display/scaler output (SDO) | 30 | `ipod_classic_sdo.c`: frame-done edge, `+0x280` ack, `SDO_FRAME_IRQ=1` (default off) |
+| `0x39600000` | JPEG decoder | | not mapped (floor) |
+| `0x39800000` | video decoder | 35 | `ipod_classic_vdec.c`, `docs/video-decoder.md` |
+| `0x39900000` | DMAC1 (PL080) | 17 | `hw/dma/pl080.c` |
+| `0x39A00000` | EIC (7 groups × 32; groups → IRQ 0-3, 31-33) | | unimp; the guest programs it, nothing fires |
+| `0x3C100000` | RNG (inferred) | | `ipod_classic.c`: LCG, `+0` ready `[2:0]` (no enable bit: gating it hangs), `+4` data, `+8` seed. Only reached diskless |
+| `0x3C200000` | click wheel | 23 | `ipod_classic_wheel.c` |
+| `0x3C300000` | SPI0 (NOR) | 9 | not mapped (floor); SPI1 `0x3CE00000`, SPI2 `0x3D200000` |
+| `0x3C400000` | USB PHY | | unimp |
+| `0x3C500000` | clock / PLL | | `ipod_classic_clk.c`: `PLLLOCK` reports enabled PLLs locked, `SWRCON` reboots, sub-word access |
+| `0x3C600000` | I2C0 | 21 | `ipod_classic_i2c.c` + PMU + CS42L55. I2C1 at `0x3C900000` (22), not modelled |
+| `0x3C700000` | timers | 8 (A-D), 7 (E-H) | `ipod_classic_timer.c`, interval mode only |
+| `0x3C800000` | WDT | | unimp |
+| `0x3CA00000` | I2S0 | | `ipod_classic_i2s.c` (4 KB window); I2S1 `0x3CD00000`, I2S2 `0x3D400000` |
+| `0x3CB00000` | S/PDIF | | unimp |
+| `0x3CC00000` | UART, 4 ports, stride `0x4000` | 24-27 | port 0 only, `hw/char/exynos4210_uart.c`; on the dock connector (iAP by default) |
+| `0x3CF00000` | GPIO, 16 groups × 8, stride `0x20` | | `ipod_classic_gpio.c`: pin 86 = media present (`GPIO_MEDIA`), `LCDTYPE` straps; rest read 0 |
+| `0x3D100000` | chip ID | | unimp |
+
+The table's "unimp" entries are `create_unimplemented_device()` windows; "floor" is the window-wide
+`s5l8702.io` region. Both log under `-d unimp` and read 0. The `ipod_classic.h` defines for `0x3CD00000`
+(SPI), `0x3CE00000` (ADC), `0x3D200000` (RTC), `0x39400000` (FMC), `0x38600000`/`0x38800000` (USB HC/FC) and
+`0x39C00000` (INT) are S5L8700/8701 names; on the 8702 those addresses are SPI1/SPI2/I2S1 or nothing.
+
+Boot without a bootrom: `-kernel` loads the raw `osos` at `0x08000000` and the machine writes the boot info
+block (`BOOTINFO`, `FWGUID`). For a Rockbox app image it also reproduces the bootloader hand-off
+(`ipod_classic_handoff`): SP at the top of IRAM0 and timer E at 1 MHz, since `crt0.S` calls `memory_init` before
+setting stacks and `udelay` spins on `TECNT`. Semihosting is on by default: the retailOS prints its panics through
+it (stderr).
+
+Not modelled: USB, NAND/ECC, CE-ATA/SDCI, AES, the DSP, EIC, SPI/NOR, S/PDIF, WDT, chip ID, Mikey, I2C1, UARTs
+1-3, the bootrom.
+
+### Open hardware questions
+
+| Question | Status |
+|---|---|
+| Bootrom size (50 vs 64 KiB) and the register that remaps `0x0` (ROM → IRAM0) | unknown; the model keeps the IRAM0 alias at 0 unless `-M ...,bootrom=` is given |
+| What GPIO pin 86 is on the board | its role in Apple's firmware is verified, the board net is not |
+| `WHEELCON` bits, `WHEELDIV` `0x3A980`, `WHEELPEND`/`WHEELMASK` bits 1-2, why both `WHEELTX` encodings work | unknown, not needed |
+| LCD `+0x7C`, `+0x88`; whether `+0x70` latches a frame or enables the scan; `LCD_STATUS` bits 2 and 8 | unknown |
+| The rest of the `0x38900000` map | only what the image and `DISPTRACE=1` show |
+| Part numbers of the four panels; UART2/3 pin mux; a PKE block at `0x3D000000` | unknown |
 
 ## Audio / display models
 

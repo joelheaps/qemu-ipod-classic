@@ -7,7 +7,7 @@
  * codec at the sample rate set by I2SCLKDIV.
  *
  * The register map is Rockbox's (firmware/export/s5l87xx.h:1186-1196), and every
- * value the retailOS writes was confirmed live (see wiki/14-classic6g-audio.md):
+ * value the retailOS writes was confirmed live:
  *
  *   +0x00 I2SCLKCON  clock enable          retailOS writes 1
  *   +0x04 I2STXCON   TX configuration      retailOS writes 0x0b100019

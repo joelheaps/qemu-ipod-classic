@@ -2,7 +2,7 @@
  * S5L8702 I2S transmitter, 0x3CA00000.
  *
  * See include/hw/arm/ipod_classic/ipod_classic_i2s.h for the register map and
- * wiki/14-classic6g-audio.md for the whole audio path and how it was measured.
+ * hw/arm/ipod_classic/README.md for the whole audio path.
  *
  * WHAT THIS MODEL DOES
  *
@@ -254,11 +254,7 @@ static void i2s_count_hit(hwaddr off, const char *dir, uint32_t val)
  * Hito 2. Draining the audio DMA at the sample rate so the DMAC's terminal-count
  * IRQ (16) reaches the firmware at real playback tempo instead of all at once,
  * which is what makes a progress bar advance with the clock rather than jump to
- * the end. Gated by AUDIOPACE=1 because it changes the timing of the audio DMA
- * and, until a playback path that produces non-silence exists (the retailOS
- * decodes on the unmodelled CalmADM2E DSP, see wiki/14 §4), its only observable
- * effect is on the boot silence push -- so it is off by default and the default
- * build is byte-for-byte the old behaviour.
+ * the end. On by default; AUDIOPACE=0 restores the un-paced drain.
  */
 static int audiopace = -1;
 
@@ -269,8 +265,8 @@ static bool i2s_pace_on(void)
         /* ON by default: the paced drain is what clocks the I2S transmitter in
          * real time. MEASURED, without it the DMA never moves, tx_samples stays
          * at 0, the SM1 stream position never advances and the retailOS audio
-         * path never leaves its stopped state (wiki/19 s11.119; reproduced
-         * 2026-10-07 with the full SM1 combo). AUDIOPACE=0 restores the
+         * path never leaves its stopped state (reproduced 2026-10-07 with
+         * the full SM1 combo). AUDIOPACE=0 restores the
          * un-paced baseline. */
         audiopace = (e && *e && *e == '0') ? 0 : 1;
     }
@@ -331,7 +327,7 @@ static struct {
  * samples the ARM has not decoded yet. On a host that cannot decode this MP3 at
  * >=1x real time the cushion drains over a few seconds and underruns resume --
  * that is a host-performance ceiling, not a bug (the same PCM still reaches the
- * backend, byte-identical to the WAV; see wiki/16).
+ * backend, byte-identical to the WAV).
  */
 #define I2S_LIVE_PRIME_MS 300u
 
@@ -581,7 +577,7 @@ static uint64_t ipod_classic_i2s_read(void *opaque, hwaddr offset,
          * we have documents them and Rockbox never reads it. Returning 0 (what
          * the unimplemented window did) never hung the boot, so we keep 0 as
          * the base and let I2STRACE during a real play tell us which bit, if
-         * any, the Now Playing screen waits on. See wiki/14.
+         * any, the Now Playing screen waits on.
          */
         val = 0;
         break;

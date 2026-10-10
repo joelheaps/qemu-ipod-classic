@@ -101,8 +101,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicI2CState, IPOD_CLASSIC_I2C)
  * have set it, and the only thing that runs before it is the bootrom, which
  * has to reach the PMU on this very bus to find out why the machine woke up.
  *
- * INFERRED. We have no bootrom dump -- wiki/10 records that this SoC will not
- * give one up -- so this is reasoning from the driver's own shape, not a
+ * INFERRED. We have no bootrom dump -- docs/classic6g-firmware.md records that
+ * this SoC will not give one up -- so this is reasoning from the driver's own shape, not a
  * reading of the code that does it. What is VERIFIED is the consequence: with
  * IICCON left at zero the enable mask is zero, the handler never runs, and the
  * retailOS blocks on RTXC event 61 for ever.

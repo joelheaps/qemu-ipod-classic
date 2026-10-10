@@ -2,8 +2,8 @@
  * Apple iPod 5th generation ("Video") — PortalPlayer PP5020/PP5022 SoC.
  *
  * Addresses come from Rockbox's firmware/export/pp5020.h and the boot model
- * from bootloader/ipod.c. See wiki/07-pp502x-hardware.md for the derivation
- * and wiki/06-ipod-video-5g.md for the device this was taken off.
+ * from bootloader/ipod.c. See hw/arm/ipod_video/README.md for the derivation
+ * and the device this was taken off.
  */
 
 #ifndef HW_ARM_IPOD_VIDEO_H

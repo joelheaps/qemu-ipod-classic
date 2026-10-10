@@ -7,8 +7,7 @@
  * that is not modelled yet is registered as an unimplemented device so that
  * -d unimp tells us exactly what the guest reaches for next.
  *
- * See wiki/02-s5l8702-hardware.md for where the addresses come from and
- * wiki/04-roadmap.md for what comes next.
+ * See hw/arm/ipod_classic/README.md for where the addresses come from.
  */
 
 #include "qemu/osdep.h"
@@ -415,7 +414,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
      * because the two things we want to boot land in different places: a
      * Rockbox bootloader runs from IRAM1 at 0x22020800, while the osos image
      * of a retail firmware loads at 0x08000000 (addr in the firmware
-     * directory, see wiki/01-firmware-ipsw.md). A raw binary has no such
+     * directory, see docs/classic6g-firmware.md). A raw binary has no such
      * information, so it goes to SDRAM.
      */
     if (machine->kernel_filename) {
@@ -796,7 +795,7 @@ static void ipod_classic_machine_init(MachineState *machine)
      * 0x0808e1ac, and set_freq's cscodec_write(5, code)); while it did not exist
      * every write was NACKed and every read returned bus garbage, which is a
      * candidate for why selecting a song never engages playback. See
-     * ipod_classic_cs42l55.c and wiki/14.
+     * ipod_classic_cs42l55.c.
      */
     i2c_slave_create_simple(nms->i2c0->bus, TYPE_IPOD_CLASSIC_CS42L55,
                             S5L8702_CS42L55_I2C_ADDR);
@@ -947,7 +946,7 @@ static void ipod_classic_machine_init(MachineState *machine)
      * create_unimplemented_device() until now, and that threw ~6144 PCM samples
      * per boot on the floor (the DMA target FIFO is +0x10) and made every
      * I2STXCOM readback zero, so the firmware could never confirm the
-     * transmitter started. See ipod_classic_i2s.c and wiki/14.
+     * transmitter started. See ipod_classic_i2s.c.
      *
      * The window is 0x1000; the rest of the 1 MB block still falls to the io
      * floor. It is given DMAC0 so it can pace the audio DMA (hito 2).
@@ -976,7 +975,7 @@ static void ipod_classic_machine_init(MachineState *machine)
      * models the run/power handshake the retailOS audio bring-up drives (block
      * identity, clock-ready, per-channel state machine, run latch). It was an
      * unimplemented zero window until the play path was found to hang on it; see
-     * ipod_classic_sm1.c and wiki/19 section 11. Full 1 MB window so every
+     * ipod_classic_sm1.c. Full 1 MB window so every
      * undecoded offset still reads 0 like the device it replaces.
      */
     /*
@@ -1034,7 +1033,6 @@ static void ipod_classic_machine_init(MachineState *machine)
      * it installs a handler at 0x08017378 for index 18, and that handler is the
      * only thing that signals the event its native render pump waits on. The
      * line is wired unconditionally; SM1 only raises it under SM1_IRQ=1.
-     * See wiki/19 section 11.25.
      */
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                        s5l8702_get_irq(nms, S5L8702_SM1_IRQ));

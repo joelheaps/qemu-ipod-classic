@@ -29,7 +29,7 @@
  * next, which is exactly what we want to see when the guest asks for a reboot:
  * 0x0827a8d4 copies one of "--------", "diskmode", "diskscan", "softupdt" or
  * "retailOS" there from the table at 0x0837be25, and 0x08322b10 then writes
- * SWRCON. See wiki/11-classic6g-retailos.md.
+ * SWRCON.
  */
 #define S5L8702_BOOT_TAG_ADDR   0x2203ff00
 

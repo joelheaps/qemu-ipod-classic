@@ -24,7 +24,7 @@
  *     executes it. GPO32 bit 14 is faked as already set so that Rockbox, which
  *     would otherwise try to upload it too, counts the panel as powered.
  *
- * See wiki/07-pp502x-hardware.md.
+ * See hw/arm/ipod_video/README.md.
  */
 
 #include "qemu/osdep.h"

@@ -278,13 +278,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicWheelState, IPOD_CLASSIC_WHEEL)
  * that it is over before the next keystroke; the measurement it bought is the
  * MENU column of the table above, and nothing here claims more than that.
  *
- * AND IT IS NOT THE WHOLE STORY, which is why the table above is printed with
- * its bad column: SELECT is still lost about half the time and this did not
- * change that, so the loss has a second cause that has NOT been found. The
- * suspect and the experiment are written down in wiki/11 s.18.8; the short
- * version is that the key dispatcher reads the PMU hold switch over I2C on
- * every single key and returns without doing anything if the answer is not
- * zero. Do not read this repeat as "input is fixed".
+ * It did not fix the SELECT loss in the table above. That had a second cause:
+ * the key dispatcher reads the PMU hold switch over I2C on every key, and the
+ * I2C controller lost bytes to the interrupt ack (fixed; see "I2C / PMU" in
+ * hw/arm/ipod_classic/README.md).
  */
 #define S5L8702_WHEEL_BTN_REPEAT_MS 400
 

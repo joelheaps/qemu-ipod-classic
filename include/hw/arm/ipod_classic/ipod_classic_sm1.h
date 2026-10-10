@@ -10,8 +10,7 @@
  *
  * The register map and state machine here were reverse-engineered from
  * osos_decrypted.bin (base VA = file offset + 0x07FF51B8) and cross-checked in
- * runtime with the pctrace mem-watch; see wiki/19-classic6g-dsp-hle.md section
- * 11. Every offset below is VERIFIED present in the disassembly (an accessor
+ * runtime with the pctrace mem-watch. Every offset below is VERIFIED present in the disassembly (an accessor
  * reads/writes it); the ROLE of each is marked VERIFIED / INFERIDO / UNKNOWN in
  * the .c handlers. This device models the handshake coherently (state derived
  * from the writes) so ANY bring-up path -- the codec bring-up 0x0808170c or the
@@ -135,7 +134,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicSM1State, IPOD_CLASSIC_SM1)
  * The commands the power-up 0x080ba768 writes to sub+0x10, in order: 4 (power
  * up), 16 (run) and finally 96 (stop). The state at sub+0x14 reads 7 for the
  * first two and returns to 0 after the stop -- the render 0x0808170c requires
- * that 0 at 0x080820f4 before it will build its engine context. wiki/19 s11.28.
+ * that 0 at 0x080820f4 before it will build its engine context.
  */
 #define S5L8702_SM1_SUB_CMD_UP   4
 #define S5L8702_SM1_SUB_CMD_RUN  16
@@ -163,7 +162,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicSM1State, IPOD_CLASSIC_SM1)
  * 0x22020000). IRAM1 is 128 KiB, so the position wraps every 32768 frames and
  * every write the firmware issues lands inside that buffer. Reporting a
  * cumulative count instead walked the pointer out of RAM after ~1.9 s and the
- * resulting data abort froze the whole native render path. wiki/19 s11.26.
+ * resulting data abort froze the whole native render path.
  */
 /*
  * Reported ring size, a MODEL CHOICE: the real ring size is undetermined. The
@@ -217,8 +216,7 @@ struct IPodClassicSM1State {
      * We never wired line 18: our VIC map came from Rockbox
      * (firmware/export/s5l87xx.h), and Rockbox has a GAP at 18 because it
      * decodes on the ARM and never drives this engine. So the block that would
-     * report "buffer consumed" had no way to interrupt at all. See
-     * wiki/19 section 11.25.
+     * report "buffer consumed" had no way to interrupt at all.
      */
     qemu_irq irq;
 
