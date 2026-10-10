@@ -442,10 +442,20 @@ static const VMStateDescription vmstate_ipod_classic_timer_channel = {
     }
 };
 
+static int ipod_classic_timer_post_load(void *opaque, int version_id)
+{
+    IPodClassicTimerState *s = opaque;
+
+    /* irq16/irq32 are sysbus outputs; re-derive them from the saved regs. */
+    ipod_classic_timer_update_irq(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_classic_timer = {
     .name = TYPE_IPOD_CLASSIC_TIMER,
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = ipod_classic_timer_post_load,
     .fields = (VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(chan, IPodClassicTimerState, S5L8702_NUM_TIMERS,
                              1, vmstate_ipod_classic_timer_channel,
