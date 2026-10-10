@@ -315,7 +315,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
         }
     }
 
-    allocate_ram(sysmem, "edgeic", EDGEIC_MEM_BASE, EDGEIC_MEM_SIZE);
+    /* s5l8702.edgeic is a real (minimal) device now; see the machine init. */
 
     nms->reset_pc = SDRAM_MEM_BASE;
 
@@ -646,7 +646,7 @@ static void ipod_classic_machine_init(MachineState *machine)
     MemoryRegion *sysmem;
     AddressSpace *nsas;
     ARMCPU *cpu;
-    DeviceState *dev;
+    DeviceState *dev, *edgeic;
 
     if (nms->semihosting) {
         qemu_semihosting_enable();
@@ -965,6 +965,12 @@ static void ipod_classic_machine_init(MachineState *machine)
      */
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                        s5l8702_get_irq(nms, S5L8702_SM1_IRQ));
+
+    edgeic = qdev_new(TYPE_IPOD_CLASSIC_EDGEIC);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(edgeic), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(edgeic), 0, EDGEIC_MEM_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(edgeic), 0,
+                       s5l8702_get_irq(nms, S5L8702_VDEC_IRQ));
 
     /* Serial console. */
     exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0),
