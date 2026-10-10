@@ -19,7 +19,9 @@
 #include "migration/vmstate.h"
 #include "sysemu/runstate.h"
 #include "qemu/error-report.h"
+#include "exec/memory.h"
 #include "hw/arm/ipod_classic/ipod_classic_clk.h"
+#include "hw/arm/ipod_classic/ipod_classic.h"
 
 /*
  * The 256 bytes at the top of IRAM1 that the bootrom and the OS use to talk to
@@ -35,6 +37,9 @@ static uint64_t ipod_classic_clk_read(void *opaque, hwaddr offset,
                                       unsigned size)
 {
     IPodClassicClkState *s = opaque;
+    hwaddr word_off = offset & ~(hwaddr)3;
+    unsigned shift = 8 * (offset & 3);
+    uint32_t word;
 
     if (offset + size > S5L8702_CLK_MEM_SIZE) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: read past the block at 0x%"
@@ -42,7 +47,7 @@ static uint64_t ipod_classic_clk_read(void *opaque, hwaddr offset,
         return 0;
     }
 
-    switch (offset) {
+    switch (word_off) {
     case S5L8702_CLK_PLLLOCK:
         /*
          * "Start status: 0 -> in progress, 1 -> locked" for bits 0..2, and the
@@ -59,10 +64,50 @@ static uint64_t ipod_classic_clk_read(void *opaque, hwaddr offset,
                     lock |= S5L8702_PLLLOCK_LCK(n) | S5L8702_PLLLOCK_DMLCK(n);
                 }
             }
-            return lock;
+            word = lock;
         }
+        break;
     default:
-        return s->reg[offset / 4];
+        word = s->reg[word_off / 4];
+        break;
+    }
+
+    /*
+     * Sub-word reads are real: Rockbox's cg16_config() configures a 16-bit
+     * clock gate with a 32-bit read-modify-write and then polls it with an
+     * ldrh (clocking-s5l8702.c). The register file is 32-bit words, so hand
+     * back only the bytes the access asked for. The caller is aligned (the
+     * core rejects unaligned IO because .valid.unaligned is false), so
+     * shift + size * 8 never exceeds 32.
+     */
+    return extract32(word, shift, size * 8);
+}
+
+/*
+ * Clk_SM1 (PWRCON0 bit 4) clocks IRAM1; Rockbox's app gates it in system_init().
+ * On hardware any IRAM1 access then hangs the bus. Here the RAM simply vanishes
+ * (reads 0, writes dropped), so code or data placed there dies loudly.
+ */
+static void ipod_classic_clk_gate_iram1(uint32_t pwrcon0)
+{
+    static MemoryRegion *iram1;     /* cached: find() cannot see it once gated */
+    bool gated = pwrcon0 & (1u << 4);
+
+    if (!iram1) {
+        MemoryRegionSection sec = memory_region_find(get_system_memory(),
+                                                     IRAM1_MEM_BASE, 1);
+        iram1 = sec.mr;
+        if (iram1) {
+            memory_region_unref(iram1);
+        }
+    }
+    if (iram1) {
+        if (iram1->enabled == gated) {                    /* state changes */
+            warn_report("S5L8702: Clk_SM1 %s -- IRAM1 is %s",
+                        gated ? "gated" : "ungated",
+                        gated ? "DEAD (real bus would hang)" : "back");
+        }
+        memory_region_set_enabled(iram1, !gated);
     }
 }
 
@@ -70,6 +115,9 @@ static void ipod_classic_clk_write(void *opaque, hwaddr offset,
                                    uint64_t value, unsigned size)
 {
     IPodClassicClkState *s = opaque;
+    hwaddr word_off = offset & ~(hwaddr)3;
+    unsigned shift = 8 * (offset & 3);
+    uint32_t *reg = &s->reg[word_off / 4];
 
     if (offset + size > S5L8702_CLK_MEM_SIZE) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: write past the block at 0x%"
@@ -78,7 +126,10 @@ static void ipod_classic_clk_write(void *opaque, hwaddr offset,
         return;
     }
 
-    switch (offset) {
+    /* Keep only the bytes the access carries, then place them in the word. */
+    value &= size < 4 ? ((1u << (size * 8)) - 1) : 0xffffffffu;
+
+    switch (word_off) {
     case S5L8702_CLK_SWRCON:
         if (value != 0) {
             char tag[9] = { 0 };
@@ -98,17 +149,21 @@ static void ipod_classic_clk_write(void *opaque, hwaddr offset,
             s->reg[S5L8702_CLK_RSTSR / 4] |= S5L8702_RSTSR_SWR;
             qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         }
-        s->reg[offset / 4] = value;
+        *reg = deposit32(*reg, shift, size * 8, value);
+        break;
+    case S5L8702_CLK_PWRCON0:
+        *reg = deposit32(*reg, shift, size * 8, value);
+        ipod_classic_clk_gate_iram1(*reg);
         break;
     case S5L8702_CLK_RSTSR:
         /* Write-one-to-clear, the usual Samsung convention for this one. */
-        s->reg[offset / 4] &= ~(uint32_t)value;
+        *reg &= ~(uint32_t)(value << shift);
         break;
     case S5L8702_CLK_PLLLOCK:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: PLLLOCK is read-only\n", __func__);
         break;
     default:
-        s->reg[offset / 4] = value;
+        *reg = deposit32(*reg, shift, size * 8, value);
         break;
     }
 }
@@ -117,7 +172,12 @@ static const MemoryRegionOps ipod_classic_clk_ops = {
     .read = ipod_classic_clk_read,
     .write = ipod_classic_clk_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
-    .valid.min_access_size = 4,
+    /*
+     * The block is byte-addressable; Rockbox reaches the 16-bit clock gates
+     * (CG16_*, e.g. CG16_RTIME at 0x12) with ldrh/strh, and its cg16_config()
+     * polls one after a 32-bit read-modify-write.
+     */
+    .valid.min_access_size = 1,
     .valid.max_access_size = 4,
 };
 
@@ -126,6 +186,7 @@ static void ipod_classic_clk_reset(DeviceState *dev)
     IPodClassicClkState *s = IPOD_CLASSIC_CLK(dev);
 
     memset(s->reg, 0, sizeof(s->reg));
+    ipod_classic_clk_gate_iram1(0);
     /*
      * Tell the guest the last reset was a power-on one. Apple's retailOS reads
      * RSTSR; leaving it at zero would mean "no reset happened", which is not a

@@ -89,6 +89,89 @@ static void ipod_classic_write_bootinfo(IPodClassicMachineState *nms)
     cpu_physical_memory_write(S5L8702_BOOTINFO_PTR, &ptr, sizeof(ptr));
 }
 
+/*
+ * Clock gates: on hardware an access to a peripheral whose PWRCON gate bit is
+ * set (= clock off) hangs the bus; here it would silently work. Log it. A thin
+ * pass-through region sits over each block listed below and checks the clk
+ * block's PWRCON0/1 on every access, once per block. Bits are Rockbox's
+ * CLOCKGATE_* numbers for the s5l8702 (PWRCON0 = 0..31, PWRCON1 = 32..63);
+ * only the unambiguous ones are listed (I2C/SPI/LCD also have PWRCON4 gates).
+ * MEASURED, hwprobe2 under Rockbox: PWRCON0 = 0xfdffffd5, PWRCON1 = 0x0003ef5d.
+ */
+typedef struct {
+    IPodClassicMachineState *nms;
+    MemoryRegion *orig, mr;
+    hwaddr base;
+    const char *name;
+    int bit;
+    bool warned;
+} GateWatch;
+
+static void gate_check(GateWatch *g, hwaddr off, bool write)
+{
+    uint32_t pwr = g->nms->clock0->reg[(S5L8702_CLK_PWRCON0 / 4) + g->bit / 32];
+
+    if (!g->warned && (pwr >> (g->bit % 32) & 1)) {
+        g->warned = true;
+        qemu_log_mask(LOG_GUEST_ERROR, "s5l8702.clk: %s of %s+0x%" HWADDR_PRIx
+                      " with its clock gated (gate %d, PWRCON%d=0x%08x), pc~0x%08x"
+                      " -- hangs the bus on hardware\n", write ? "write" : "read",
+                      g->name, off, g->bit, g->bit / 32, pwr,
+                      g->nms->cpu->env.regs[15]);
+    }
+}
+
+static MemTxResult gate_read(void *opaque, hwaddr off, uint64_t *v,
+                             unsigned size, MemTxAttrs attrs)
+{
+    GateWatch *g = opaque;
+    gate_check(g, off, false);
+    return memory_region_dispatch_read(g->orig, off, v, size_memop(size), attrs);
+}
+
+static MemTxResult gate_write(void *opaque, hwaddr off, uint64_t v,
+                              unsigned size, MemTxAttrs attrs)
+{
+    GateWatch *g = opaque;
+    gate_check(g, off, true);
+    return memory_region_dispatch_write(g->orig, off, v, size_memop(size), attrs);
+}
+
+static const MemoryRegionOps gate_ops = {
+    .read_with_attrs = gate_read,
+    .write_with_attrs = gate_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+};
+
+static void ipod_classic_gate_watch(IPodClassicMachineState *nms,
+                                    MemoryRegion *sysmem)
+{
+    static const struct { const char *name; hwaddr base; int bit; } t[] = {
+        { "sha1", SHA1_MEM_BASE, 0 },     { "lcd", LCD_MEM_BASE, 1 },
+        { "usbotg", USBOTG_MEM_BASE, 2 }, { "sm1", SM1_MEM_BASE, 4 },
+        { "aes", AES_MEM_BASE, 7 },       { "dmac0", DMAC0_MEM_BASE, 11 },
+        { "dmac1", DMAC1_MEM_BASE, 12 },  { "wheel", WHEEL_MEM_BASE, 33 },
+        { "timer", TIMER_MEM_BASE, 37 },  { "gpio", GPIO_MEM_BASE, 44 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(t); i++) {
+        GateWatch *g = g_new0(GateWatch, 1);
+        MemoryRegionSection sec = memory_region_find(sysmem, t[i].base, 1);
+
+        if (!sec.mr || sec.offset_within_region) {
+            continue;
+        }
+        g->nms = nms;
+        g->orig = sec.mr;
+        g->name = t[i].name;
+        g->bit = t[i].bit;
+        memory_region_init_io(&g->mr, NULL, &gate_ops, g, "gate-watch",
+                              memory_region_size(sec.mr));
+        memory_region_add_subregion_overlap(sysmem, t[i].base, &g->mr, 10);
+    }
+}
+
 static void ipod_classic_cpu_reset(void *opaque)
 {
     IPodClassicMachineState *nms = IPOD_CLASSIC_MACHINE((MachineState *)opaque);
@@ -907,6 +990,7 @@ static void ipod_classic_machine_init(MachineState *machine)
     memory_region_add_subregion_overlap(sysmem, IO_WINDOW_BASE, io_floor,
                                         -2000);
 
+    ipod_classic_gate_watch(nms, sysmem);
     qemu_register_reset(ipod_classic_cpu_reset, nms);
 }
 
