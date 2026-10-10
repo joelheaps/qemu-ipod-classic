@@ -816,6 +816,10 @@ if 'ust' in get_option('trace_backends')
   lttng = dependency('lttng-ust', required: true, version: '>= 2.1',
                      method: 'pkg-config')
 endif
+sm1_dec = declare_dependency(dependencies: [
+  dependency('libavcodec', required: get_option('sm1_decoder')),
+  dependency('libavutil', required: get_option('sm1_decoder'))])
+sm1_dec_found = sm1_dec.found()
 pixman = not_found
 if not get_option('pixman').auto() or have_system or have_tools
   pixman = dependency('pixman-1', required: get_option('pixman'), version:'>=0.21.8',
@@ -2198,6 +2202,7 @@ config_host_data.set('CONFIG_XKBCOMMON', xkbcommon.found())
 config_host_data.set('CONFIG_KEYUTILS', keyutils.found())
 config_host_data.set('CONFIG_GETTID', has_gettid)
 config_host_data.set('CONFIG_GNUTLS', gnutls.found())
+config_host_data.set('CONFIG_SM1_DECODER', sm1_dec_found)
 config_host_data.set('CONFIG_GNUTLS_CRYPTO', gnutls_crypto.found())
 config_host_data.set('CONFIG_TASN1', tasn1.found())
 config_host_data.set('CONFIG_GCRYPT', gcrypt.found())
