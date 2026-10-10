@@ -28,6 +28,7 @@ NAMES += hwprofile
 NAMES += cache
 NAMES += drcov
 NAMES += pctrace
+NAMES += provtrace
 
 ifeq ($(CONFIG_WIN32),y)
 SO_SUFFIX := .dll
