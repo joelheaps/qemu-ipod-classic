@@ -65,9 +65,20 @@ static void ipod_classic_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
 }
 
 /*
- * Reproduce what the bootrom leaves in the top of IRAM1 before it jumps into
- * the OS image. See the S5L8702_SYSINFO_* comments in the machine header for
- * the disassembly each field comes from.
+ * Reproduce what Apple's boot chain leaves in the top of IRAM1 before it runs
+ * the osos. SYSINFO is written before the osos by Apple's boot chain (not the
+ * ONB code in nor.bin; likely the bootrom — UNVERIFIED). See the
+ * S5L8702_SYSINFO_* comments in the machine header for the disassembly each
+ * field comes from.
+ *
+ * Not the ONB code: its reset at 0x41e34 never references 0x2203ff00 /
+ * 0x2203fde0 / "IsyS". MEASURED: under the Rockbox 4.0 app, hwprobe shows
+ * the top of IRAM1
+ * (0x2203fd00..0x22040000) as random power-on noise with no 'IsyS' tag at
+ * 0x2203ff18 (assets/device/probe/hwprobe2.txt). So the osos gets the block and
+ * Rockbox must not: an ELF boots without it, a raw image with it. The Rockbox
+ * APP is a raw image too, so its scripts set BOOTINFO=0; BOOTINFO=1/0 forces
+ * it either way.
  *
  * Written on every reset, not just at startup, because it lives in RAM the
  * guest is free to overwrite and because a guest-requested reboot (SWRCON)
@@ -80,9 +91,25 @@ static void ipod_classic_write_bootinfo(IPodClassicMachineState *nms)
         [S5L8702_SYSINFO_DRAM_SIZE_OFF / 4] = cpu_to_le32(SDRAM_MEM_SIZE),
         [S5L8702_SYSINFO_DRAM_BASE_OFF / 4] = cpu_to_le32(SDRAM_MEM_BASE),
     };
+    /*
+     * FWGUID=000A270021574219 (hex): the FireWire GUID the osos keys its
+     * iTunesDB hash58 check on. ONB copies it from the NOR's SysCfg "FwId"
+     * entry (MEASURED: assets/device/probe/nor.bin +0x2c, stored byte-reversed) into
+     * SYSINFO +0x38 (low word) / +0x3c (high word); 0x08323ac8 reads it there.
+     * Without it the GUID is 0 and any DB signed for a real device is rejected.
+     */
+    if (getenv("FWGUID")) {
+        uint64_t guid = strtoull(getenv("FWGUID"), NULL, 16);
+        sysinfo[0x38 / 4] = cpu_to_le32((uint32_t)guid);
+        sysinfo[0x3c / 4] = cpu_to_le32((uint32_t)(guid >> 32));
+    }
     uint32_t tag = cpu_to_le32(S5L8702_SYSINFO_MAGIC);
     uint32_t ptr = cpu_to_le32(S5L8702_SYSINFO_BASE);
     uint8_t zero[0x100] = { 0 };
+
+    if (!nms->bootinfo) {
+        return;
+    }
 
     cpu_physical_memory_write(S5L8702_BOOTINFO_BASE, zero, sizeof(zero));
     cpu_physical_memory_write(S5L8702_SYSINFO_BASE, sysinfo, sizeof(sysinfo));
@@ -263,6 +290,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
     IPodClassicMachineState *nms = IPOD_CLASSIC_MACHINE(machine);
 
     MemoryRegion *iram0;
+    MemoryRegion *iram1;
     MemoryRegion *sdram;
     MemoryRegion *sdram_uncached;
 
@@ -291,7 +319,25 @@ static void ipod_classic_memory_setup(MachineState *machine,
                                 sdram_uncached);
 
     iram0 = allocate_ram(sysmem, "iram0", IRAM0_MEM_BASE, IRAM0_MEM_SIZE);
-    allocate_ram(sysmem, "iram1", IRAM1_MEM_BASE, IRAM1_MEM_SIZE);
+    iram1 = allocate_ram(sysmem, "iram1", IRAM1_MEM_BASE, IRAM1_MEM_SIZE);
+
+    /*
+     * IRAMNOISE=seed: fill IRAM0/IRAM1 with pseudo-random bytes, as the real
+     * SRAM powers up (MEASURED, hwprobe2: IRAM1's top is noise under Rockbox).
+     * Done before the -kernel bootinfo is written, so the osos still gets its
+     * block. Opt-in: QEMU's zeroed RAM hides guests that read uninitialised IRAM.
+     */
+    if (getenv("IRAMNOISE")) {
+        GRand *r = g_rand_new_with_seed(strtoul(getenv("IRAMNOISE"), NULL, 0));
+        MemoryRegion *mrs[2] = { iram0, iram1 };
+        for (int i = 0; i < 2; i++) {
+            uint32_t *p = memory_region_get_ram_ptr(mrs[i]);
+            for (uint64_t j = 0; j < memory_region_size(mrs[i]) / 4; j++) {
+                p[j] = g_rand_int(r);
+            }
+        }
+        g_rand_free(r);
+    }
 
     /*
      * IRAMSPILL=N: RAM immediately above IRAM1, for MEASUREMENT ONLY.
@@ -319,6 +365,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
     /* s5l8702.edgeic is a real (minimal) device now; see the machine init. */
 
     nms->reset_pc = SDRAM_MEM_BASE;
+    nms->bootinfo = true;
 
     /*
      * IRAM0 also appears at address 0, which is where the ARM926 takes its
@@ -382,6 +429,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
                         ", entry 0x%" PRIx64, machine->kernel_filename,
                         lowaddr, highaddr, entry);
             nms->reset_pc = entry;
+            nms->bootinfo = false;
         } else {
             size = load_image_targphys(machine->kernel_filename,
                                        SDRAM_MEM_BASE, SDRAM_MEM_SIZE);
@@ -395,6 +443,9 @@ static void ipod_classic_memory_setup(MachineState *machine,
                         (unsigned)SDRAM_MEM_BASE);
             nms->reset_pc = SDRAM_MEM_BASE;
         }
+    }
+    if (getenv("BOOTINFO")) {
+        nms->bootinfo = atoi(getenv("BOOTINFO")) != 0;
     }
 }
 

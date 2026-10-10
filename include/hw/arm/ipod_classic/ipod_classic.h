@@ -206,7 +206,7 @@
  *          reboots into "softupdt" when it is anything else, so this one is
  *          not optional and its value is not a guess. 19 == 0x13 also matches
  *          the HwVr entry of the SysCfg block in this device's own NOR
- *          (assets/classic6g/bootflash_nor_1MB.bin, offset 0x5c).
+ *          (assets/firmware/24.9.1.2/bootflash_nor_1MB.bin, offset 0x5c).
  *   +0xe0  DRAM size, +0xe4 DRAM base. 0x22004534 maps
  *          [+0xe4 .. +0xe4 + +0xe0) as cached identity in the page table it
  *          builds, and 0x080634c4 hands +0xe4 + +0xe0 to the heap as the top
@@ -222,7 +222,15 @@
 #define S5L8702_SYSINFO_HW_ID_OFF     0x84
 #define S5L8702_SYSINFO_DRAM_SIZE_OFF 0xe0
 #define S5L8702_SYSINFO_DRAM_BASE_OFF 0xe4
-#define S5L8702_HW_ID                 0x00130000
+/*
+ * MEASURED (retailOS 2.0.5, MC297LL): the NOR SCfg HwVr of the user's own board
+ * reads 00 00 00 00 00 03 13 00, i.e. HwVr = 0x00130300 (assets/device/probe/nor.bin).
+ * The 2.0.5 osos demands (id >> 16) == 19 AND (id & 0xffff) >= 0x300 at
+ * 0x082b32e4 of the runtime image (the osos relocates itself, so file offsets
+ * differ), so the older 0x00130000 no longer passes. The 1.1.2 check only looked
+ * at id >> 16, so this value satisfies both firmwares.
+ */
+#define S5L8702_HW_ID                 0x00130300
 
 typedef struct {
     MachineClass parent;
@@ -251,6 +259,12 @@ typedef struct {
      * -kernel.
      */
     hwaddr reset_pc;
+    /*
+     * Write the SYSINFO/bootinfo block on reset: the osos, not Rockbox.
+     * SYSINFO is written before the osos by Apple's boot chain (not the ONB
+     * code in nor.bin; likely the bootrom — UNVERIFIED).
+     */
+    bool bootinfo;
     char bootrom_path[1024];
 } IPodClassicMachineState;
 
