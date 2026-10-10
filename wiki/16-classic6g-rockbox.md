@@ -422,3 +422,11 @@ env AUDIOPACE=1 sh tools/ipod_classic/rbplay.sh
 # a la vez altavoces + WAV:
 AUDIOWAV=/tmp/out.wav sh tools/ipod_classic/rbmusic.sh
 ```
+
+## 9. De Rockbox al osos por ROLO (fidelidad)
+
+- El osos se reubica solo: la VA en ejecucion es `0x08000000 + offset_en_fichero - 0xAF98`.
+- El bloque SYSINFO/bootinfo (`IsyS` en `0x2203ff18`) lo deja el NOR bootloader de Apple (ONB), **no** la bootrom: `assets/device/hwprobe2.txt` muestra bajo Rockbox ese tope de IRAM1 como ruido de arranque, sin etiqueta. Por eso el modelo lo escribe solo para el osos (`BOOTINFO=0/1` lo fuerza; los scripts de Rockbox ponen 0) y el stub ROLO debe escribirlo el mismo.
+- `IRAMNOISE=semilla` rellena IRAM0/IRAM1 con ruido al encender; el osos 2.0.5 arranca igual.
+- Bajo Rockbox `PWRCON0 = 0xfdffffd5`: el reloj de IRAM1 (`CLOCKGATE_SM1`, bit 4) esta cortado y tocar IRAM1 cuelga el bus real. El modelo lo registra con `-d guest_errors` ("clock gated").
+- `mise run rolo-rehearse -- fichero.ipod` ensaya el ROLO en QEMU antes de copiarlo al iPod.

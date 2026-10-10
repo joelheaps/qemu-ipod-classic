@@ -150,11 +150,11 @@ and a disk image built from the `.ipsw` firmware partition.
 # FIRMWARE partition, not here.
 truncate -s 64M ~/6g/fat32.img && mkfs.vfat -F 32 -n IPOD ~/6g/fat32.img
 python3 tools/ipod_classic/mkdisk6g4k.py ~/6g/E.img \
-        assets/extracted/Firmware-24.9.1.2 ~/6g/fat32.img
+        assets/firmware/24.9.1.2/extracted/Firmware-24.9.1.2 ~/6g/fat32.img
 
 # Boot
 cd build && ./qemu-system-arm -M iPod-Classic \
-    -kernel ../assets/classic6g/osos_decrypted.bin -serial null \
+    -kernel ../assets/firmware/24.9.1.2/osos_decrypted.bin -serial null \
     -drive if=ide,format=raw,file=$HOME/6g/E.img -snapshot
 ```
 
@@ -166,25 +166,21 @@ cd build && ./qemu-system-arm -M iPod-Classic \
 
 ### Running the music player
 
-The player needs several environment flags, each documented in
-[`wiki/20-classic6g-reproductor.md`](wiki/20-classic6g-reproductor.md). They are behind
-flags because each has measured trade-offs and none is settled enough to impose:
+Audio playback does **not** work in QEMU. The guest's MeCCA decoder never
+produces its first block (see `todo.md`), and the host-side HLE that used to
+substitute for it has been removed. The remaining audio/display models are tuned
+by the flags in [`hw/arm/ipod_classic/README.md`](hw/arm/ipod_classic/README.md):
 
 ```sh
 IRAMSPILL=0x10000 SHA1_ZERO=1 SM1_IRQ=1 \
-SM1_SLOTS=1 SM1_NSLOTS=2 SM1_DECODE=1 SM1_FEED_OFF=1 \
 DISP_ALPHA=1 PMUCHARGER=adapter \
-HLE_AUDIO_DATAPATH=1 HLE_AUDIO_SUSTAIN=1 HLE_AUDIO_DISK=<disk image> \
 ./qemu-system-arm -M iPod-Classic ... -display sdl
 ```
 
-`SM1_NSLOTS=2` is not cosmetic: the default 7-slot ring writes 28 KiB from `0x22038100`
-and that lands on memory which is not ours, freezing the UI mid-transition while audio
-keeps playing.
-
-`AUDIOWAV=/path.wav` captures everything the I2S clocks out. There is no live audio
-backend — the I2S model only writes WAV. To hear it while it runs, pipe the file to a
-player; note that `ffplay` **hangs silently** unless you set `SDL_AUDIODRIVER=pulse`.
+`AUDIOWAV=/path.wav` captures everything the I2S clocks out (silence until the
+guest's own decoder runs). There is no live audio backend — the I2S model only
+writes WAV. To hear it while it runs, pipe the file to a player; note that
+`ffplay` **hangs silently** unless you set `SDL_AUDIODRIVER=pulse`.
 
 ### Keys
 
@@ -245,9 +241,11 @@ device itself to decrypt it.** Verified chain, full detail in
 from the `]ih[` container:
 
 ```bash
-python3 tools/ipod_classic/fwtool.py list    assets/extracted/Firmware-24.9.1.2
-python3 tools/ipod_classic/fwtool.py extract assets/extracted/Firmware-24.9.1.2 assets/images
+python3 fwtool.py list    assets/firmware/24.9.1.2/extracted/Firmware-24.9.1.2
+python3 fwtool.py extract assets/firmware/24.9.1.2/extracted/Firmware-24.9.1.2 assets/firmware/24.9.1.2/images
 ```
+
+(`fwtool.py` is external firmware tooling, not in this tree.)
 
 The `osos` that comes out is **encrypted**. The `rsrc` partition is not: it is a 78 MB
 FAT16 volume with `Resources/Fonts` inside.
@@ -259,7 +257,7 @@ FAT16 volume with `Resources/Fonts` inside.
 ```bash
 python3 tools/ipod_classic/emcore_s5l8702.py info
 python3 tools/ipod_classic/emcore_s5l8702.py decrypt \
-        assets/images/1_osos.payload assets/classic6g/osos_decrypted.bin
+        assets/firmware/24.9.1.2/images/1_osos.payload assets/firmware/24.9.1.2/osos_decrypted.bin
 ```
 
 Takes **1.2 s**. Neither official emCORE client works as-is (HEAD speaks a
@@ -282,7 +280,7 @@ device. See `wiki/10` §4 — and §5, on how to avoid bricking one.
 Requires a 5G with Rockbox installed: dual boot is what puts both firmwares in one
 image. Full chain in [`wiki/09-historia-5g.md`](wiki/09-historia-5g.md); the short
 version is `tools/ipod_video/dump-firmware.ps1` (Windows, admin) followed by
-`fwtool.py` and `tools/ipod_video/mkdisk.sh`.
+`fwtool.py` (external firmware tooling, not in this tree) and `tools/ipod_video/mkdisk.sh`.
 
 ---
 
@@ -343,6 +341,7 @@ Listed because the value of this documentation is that it can be trusted.
 
 | Document | Contents |
 |---|---|
+| [`tools/README.md`](tools/README.md) | Index of the emulator tools (run, navigate/assert, gdb/trace, disk images, probes) |
 | [`wiki/README.md`](wiki/README.md) | Index of everything |
 | [`wiki/15-muros-classic6g.md`](wiki/15-muros-classic6g.md) | **Every wall on the Classic 6G and how each one fell** |
 | [`wiki/20-classic6g-reproductor.md`](wiki/20-classic6g-reproductor.md) | **How the music player was fixed** |
@@ -353,7 +352,8 @@ Listed because the value of this documentation is that it can be trusted.
 | [`wiki/09-historia-5g.md`](wiki/09-historia-5g.md) | The same for the iPod Video 5G |
 | [`wiki/05-build-notes.md`](wiki/05-build-notes.md) | Build, run, test, and how to find out where the firmware stopped |
 
-The wiki is in Spanish.
+The wiki is in Spanish. `build/` is not
+shipped: run `mise run docker:build-images` then `mise run emulator:build`.
 
 ---
 
