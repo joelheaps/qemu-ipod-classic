@@ -16,9 +16,12 @@
  * trigger is the key dispatcher: press a key, and the plugin logs the handler
  * chain that the key set off, then goes quiet again.
  *
- * Guest VAs here are RUNTIME addresses: file_offset + 0x07FF51B8. They are what
- * the CPU actually executes, which is exactly what qemu_plugin_insn_vaddr()
- * returns, so no adjustment is needed inside the plugin.
+ * Guest VAs here are RUNTIME addresses: file_offset + 0x07FF5068 for the
+ * 2.0.5 image (the older 24.9.1.2 image used +0x07FF51B8; wiki/ VAs are for
+ * that one). They are what the CPU actually executes, which is exactly what
+ * qemu_plugin_insn_vaddr() returns, so no adjustment is needed inside the
+ * plugin.  The MMU maps runtime VA = physical - 0xAF98; pctrace's `pc=`/
+ * `regpc=`/`memw=` all use that runtime VA, verified against gdb (stocktrace).
  *
  * Build:   (from the QEMU build dir)
  *   make -C contrib/plugins pctrace        # or: cd build/contrib/plugins && make
@@ -52,6 +55,15 @@
  *                               so it never perturbs the guest into regime B.
  *   regcap=N                    max logged register lines per regpc/sendex PC
  *                               (default 400; counts keep rising past the cap).
+ *   rangecap=N                  max range= lines per trigger window (default 500).
+ *   memcap=N                    max logged memw= store lines (default 400); the
+ *                               store count keeps rising past it. `memw=` takes
+ *                               ONE range: a second memw= OVERWRITES the first
+ *                               (quiet a hot writer with memwskip= instead).
+ *   memwskip=0xPC               (repeatable) memw stores from this PC are counted
+ *                               but not logged and do not use memcap (e.g. a
+ *                               huge memset). NB memw also sees the one-shot boot
+ *                               relocation stores (first ~200 ms) into the image gap.
  *
  *   CORRECTNESS: 8.2 discards callback cb-flags and emits the callback helper
  *   TCG_CALL_NO_RWG, so the guest register file is only authoritative at a TB
@@ -80,18 +92,10 @@ typedef struct {
     guint64 count;      /* total times executed (all run) */
 } WatchPC;
 
-/* Built-in table. Addresses are VERIFIED runtime VAs from wiki/19 + task brief:
- * base = osos file offset + 0x07FF51B8.
- * columns: addr, label, trigger, quiet */
+/* Built-in table: only 2.0.5 runtime VAs verified against a 2.0.5 symbol map
+ * (file offset + 0x07FF5068). columns: addr, label, trigger, quiet */
 static const WatchPC default_pcs[] = {
-    { 0x0803f390, "dispatch_key",               true,  false, 0 }, /* keycode router; SELECT=3 (TRIGGER) */
-    { 0x0803f3e4, "pmu_hold_gate",              true,  false, 0 }, /* cmp r0,#0; popne if hold!=0 (TRIGGER) */
-    { 0x08170e94, "Dhandler_router",            false, false, 0 }, /* D-handler / event router */
-    { 0x08170da4, "queue_publish",              false, false, 0 }, /* publishes into the event queue */
-    { 0x08105a1c, "dispatch_to_ui",             false, false, 0 }, /* dispatch to UI layer */
-    { 0x081f87f8, "media_dispatch_chain",       false, false, 0 }, /* candidate media-dispatch string chain */
-    { 0x081fa9e4, "HandleShuffleSongsSelected", false, false, 0 }, /* wall candidate: handler-only rule */
-    { 0x08328090, "strcmp",                     false, true,  0 }, /* VERY hot: count only (see summary) */
+    { 0x08056900, "key_dispatch", true, false, 0 }, /* keycode dispatcher (TRIGGER) */
 };
 
 static GArray *watch;               /* array of WatchPC */
@@ -117,6 +121,8 @@ typedef struct {
     guint last_gen;                 /* win_gen at which this PC was last logged */
     guint64 count;
 } RangePC;
+static guint64 range_cap = 500;     /* max range lines per window opening */
+static guint64 range_win_lines;     /* lines logged since the window opened */
 static uint64_t range_lo, range_hi; /* [lo,hi); hi==0 disables range trace */
 static GHashTable *range_tbl;       /* addr -> RangePC* */
 static guint win_gen;               /* bumped each time a trigger opens the window */
@@ -140,6 +146,7 @@ static guint64 memw_cap = 400;      /* max logged store lines */
 static guint64 memw_total;          /* total stores seen in range (uncapped) */
 static guint64 memw_lines;          /* logged store lines so far */
 static GHashTable *memw_pcs;        /* distinct writing PCs -> count */
+static GArray *memw_skip;           /* uint64 PCs: counted, never logged */
 
 /*
  * MEM-WRITE-AT-PC (surgical). memwpc=0xADDR:LABEL registers a store callback on
@@ -238,6 +245,7 @@ static void vcpu_pc_exec(unsigned int cpu_index, void *udata)
         /* (re)open the logging window and announce the trigger itself */
         window_end = now + window_us;
         win_gen++;                  /* new window: range PCs may log again */
+        range_win_lines = 0;
     }
 
     if (w->quiet) {                 /* count-only PC (e.g. strcmp): no line */
@@ -279,11 +287,12 @@ static void vcpu_range_exec(unsigned int cpu_index, void *udata)
     if (t0 == 0) {
         t0 = now;
     }
-    if (lines >= PCTRACE_LINE_MAX) {
+    if (lines >= PCTRACE_LINE_MAX || range_win_lines >= range_cap) {
         return;
     }
     lines++;
-    fprintf(out, "PCTRACE +%8" PRId64 "us cpu%u  RANGE                         "
+    range_win_lines++;
+    fprintf(out, "PCTRACE +%8" PRId64 "us cpu%u  RANGE                        "
             "@0x%08" PRIx64 "  #%" PRIu64 "\n",
             now - t0, cpu_index, r->addr, r->count);
     fflush(out);
@@ -305,6 +314,11 @@ static void vcpu_mem_w(unsigned int cpu_index, qemu_plugin_meminfo_t info,
         gpointer key = (gpointer)(uintptr_t)pc;
         guint64 c = (guint64)(uintptr_t)g_hash_table_lookup(memw_pcs, key);
         g_hash_table_insert(memw_pcs, key, (gpointer)(uintptr_t)(c + 1));
+    }
+    for (guint i = 0; memw_skip && i < memw_skip->len; i++) {
+        if (g_array_index(memw_skip, uint64_t, i) == pc) {
+            return;
+        }
     }
     if (memw_lines >= memw_cap) {
         return;
@@ -591,6 +605,14 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
             memw_cap = g_ascii_strtoull(kv[1], NULL, 10);
         } else if (!g_strcmp0(kv[0], "memwpccap") && kv[1]) {
             memwpc_cap = g_ascii_strtoull(kv[1], NULL, 10);
+        } else if (!g_strcmp0(kv[0], "rangecap") && kv[1]) {
+            range_cap = g_ascii_strtoull(kv[1], NULL, 10);
+        } else if (!g_strcmp0(kv[0], "memwskip") && kv[1]) {
+            uint64_t pc = g_ascii_strtoull(kv[1], NULL, 16);
+            if (!memw_skip) {
+                memw_skip = g_array_new(false, false, sizeof(uint64_t));
+            }
+            g_array_append_val(memw_skip, pc);
         } else if (!g_strcmp0(kv[0], "regcap") && kv[1]) {
             regpc_cap = g_ascii_strtoull(kv[1], NULL, 10);
         } else if (!g_strcmp0(kv[0], "regpc") && kv[1]) {
