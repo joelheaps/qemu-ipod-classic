@@ -1,7 +1,7 @@
 # Debugging lessons from bringing up both machines
 
-Rules that held across both ports, each with the case that taught it. Workflow and tooling (ledgers, snapshots,
-pctrace): `../osos-re/docs/experiments.md`. Guest debugging recipes: `hw/arm/ipod_classic/README.md`.
+Explanation: the rules that held across both ports, each with the case that taught it. Task steps:
+`docs/how-to/debug-a-classic-guest.md`.
 
 ## Failure patterns
 

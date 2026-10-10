@@ -1,24 +1,12 @@
 # iPod video 5G (PP5022) — `-M iPod-Video`
 
 Hardware reference for the PortalPlayer machine, what is modelled, and the model's known deviations. Boots Rockbox
-(to its menu) and Apple's retailOS (language → main menu → submenus) from the same dual-boot `osos`.
+(to its menu) and Apple's retailOS (language → main menu → submenus) from the same dual-boot `osos`. Task steps:
+`docs/how-to/run-an-ipod-video.md`.
 
 Primary source: Rockbox `firmware/export/pp5020.h` (PP5020 and PP5022 share one map), `firmware/target/arm/pp/`,
 `bootloader/ipod.c`; iPodLinux `ipodloader2/ipodhw.c`. Apple-only facts cite retailOS offsets (load base
 `0x10000000`). Code marks its own guesses `ASSUMED` / `INFERRED` / `UNDETERMINED`.
-
-## Running
-
-| Step | Command |
-|---|---|
-| Dump the firmware partition (Windows, admin, read-only) | `tools/ipod_video/dump-firmware.ps1`; feed `ipod-video-fwpart.bin` (not the full dump, which starts at the MBR) to `fwtool.py` |
-| Build a disk | `tools/ipod_video/mkdisk.sh <fw-dump> <files-dir> <output> [size-mb]` |
-| Boot | `tools/ipod_video/run.sh rockbox\|apple` (`-M iPod-Video,entry=0x735a00` / `entry=0`, `-kernel osos_full.bin`) |
-| Evidence | `navtest.sh`, `appletest.sh`: they print pixel numbers and assert nothing (`\|\| true`); read the numbers |
-
-Properties: `entry` (offset into the image to start at), `remap` (DRAM at 0 from reset, to run a Rockbox app
-image directly), `semihosting` (default on; the retailOS prints panics through it). Keys as on the classic:
-`q`/`e` wheel, `Enter` SELECT, `w` MENU, `a`/`d` prev/next, `s` play.
 
 ## The device
 

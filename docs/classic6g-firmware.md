@@ -1,8 +1,7 @@
 # iPod classic 6G firmware and the real device
 
 Reference for the firmware containers, the decrypt-on-device path and what can and cannot be read from a
-physical 6G. The tools live in `../osos-re`: `firmware/fwtool.py`, `firmware/norboot_im3.py`,
-`tools/device/emcore_s5l8702.py`. Nothing here is shipped; dumps go under `assets/` (gitignored).
+physical 6G. Nothing here is shipped; dumps go under `assets/` (gitignored).
 
 ## `.ipsw` → firmware partition → images
 
@@ -18,8 +17,8 @@ Firmware partition (`]ih[`, the same container `ipodpatcher` handles):
 | `0x104` | directory offset, **biased**: real offset = field + `0x1000` in a 6G `.ipsw` (`+0x200` on a 5G disk) |
 | `0x108` | `0x0003010c`, unidentified |
 
-Every `devOffset` in the directory carries the same bias. Reading without it lands in padding: that is how
-`rsrc` was once taken for empty. `fwtool.py` tries the known biases, then scans.
+Every `devOffset` in the directory carries the same bias; reading without it lands in padding and makes `rsrc`
+look empty.
 
 Directory entry, 40 bytes LE: `dev` (stored reversed, `ATA!`), `type` (reversed: `osos`, `rsrc`, `aupd`,
 `hash`), `id`, `devOffset`, `len`, `addr`, `entryOffset`, `chksum`, `vers`, `loadAddr`.
@@ -83,7 +82,7 @@ Read-only dump: emCORE cmd 22 (`bootflashread`, SPI READ DATA).
 `HwVr` (`0x00130000`) is the hardware id 19 the `osos` demands in the boot info block (otherwise it reboots to
 `softupdt`). On a device with emCORE installed, `0x8000` holds `emCORE Loader` signed with the UID key (so
 written by the installer, not Apple), the emCORE files sit at `0x1000+`, and Apple's ONB is gone; the `.ipsw` does
-not carry it either. `fwtool.py` parses only `enc_type` 3/4; use `norboot_im3.py` for 1/2.
+not carry it either.
 
 What the loader does, which is what the bootrom hands over: MMU on with dirty caches (it disables and cleans
 them), then a flat 1:1 map, cacheable below `0x38000000`. It pushes the framebuffer to `LCD_WDATA`

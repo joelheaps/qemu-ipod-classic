@@ -1,12 +1,13 @@
-# Two clickwheel iPods in QEMU, booting Apple's real firmware
+# The iPod classic 6G in QEMU, running Apple's retailOS
 
-This fork of [QEMU-iOS](https://github.com/devos50/qemu-ios) adds **two machines** that emulate clickwheel iPods
-and **boot real software dumped from the physical devices**, with no boot ROM and without patching a firmware
-instruction.
+This fork of [qemu-ipod-classic](https://github.com/davidmonterocrespo24/qemu-ipod-classic) exists for the **iPod classic 6G**, emulated closely enough to **boot Apple's retailOS 2.0.5**,
+with no boot ROM and without patching a firmware instruction — RTXC kernel, disk, fonts, clickwheel
+navigation, the music library and the Now Playing screen, with audio through the guest's own render pump,
+DMA and I2S.
 
 | Machine | SoC | What it boots | Reference |
 |---|---|---|---|
-| **`iPod-Classic`** | Samsung S5L8702 | **Apple's retailOS 2.0.5**: RTXC kernel, disk, fonts, clickwheel navigation, the music library and the Now Playing screen, with audio through the guest's own render pump, DMA and I2S | [`hw/arm/ipod_classic/README.md`](hw/arm/ipod_classic/README.md) |
+| **`iPod-Classic`** (this fork's purpose) | Samsung S5L8702 | **Apple's retailOS 2.0.5**, as above | [`hw/arm/ipod_classic/README.md`](hw/arm/ipod_classic/README.md) |
 | **`iPod-Video`** | PortalPlayer PP5022C | **Rockbox** to its menu, and **Apple's retailOS**: language screen → main menu → submenus → back | [`hw/arm/ipod_video/README.md`](hw/arm/ipod_video/README.md) |
 
 Neither machine emulates Apple's boot ROM: the hardware the firmware touches is modelled, and what the ROM left in
@@ -34,8 +35,8 @@ mise run emulator:run            # the same in an SDL window
 ```
 
 `emulator:boot` expects `assets/firmware/2.0.5/osos_decrypted.bin` and a disk image (`DISK`, default
-`assets/disks/E.img`). Driving the emulator (navigation, screenshots, snapshots, traces) and building disks and
-firmware images is the sibling repo `../osos-re` (`tools/`, `firmware/`). Tool index: [`tools/README.md`](tools/README.md).
+`assets/disks/E.img`). Screenshots, keys, gdb, tracing and snapshots:
+[`docs/how-to/debug-a-classic-guest.md`](docs/how-to/debug-a-classic-guest.md).
 
 ### Keys (both machines)
 
@@ -52,13 +53,15 @@ firmware images is the sibling repo `../osos-re` (`tools/`, `firmware/`). Tool i
 | Device | Path | Reference |
 |---|---|---|
 | Classic 6G | Extract `osos` from the `.ipsw`, then have the device decrypt it with its own GID key under emCORE (1.2 s over USB) | [`docs/classic6g-firmware.md`](docs/classic6g-firmware.md) |
-| Video 5G | Unencrypted; dump the firmware partition (`tools/ipod_video/dump-firmware.ps1`) from a Rockbox dual-boot iPod | [`hw/arm/ipod_video/README.md`](hw/arm/ipod_video/README.md) |
+| Video 5G | Unencrypted; dump the firmware partition (`tools/ipod_video/dump-firmware.ps1`) from a Rockbox dual-boot iPod | [`docs/how-to/run-an-ipod-video.md`](docs/how-to/run-an-ipod-video.md) |
 
 ## Known limits
 
 **iPod Classic 6G**
 
-- Elapsed time stays at 0:00 (the player's accounting never runs; see the classic README).
+- Elapsed time stays at 0:00: the guest's decoder producer (`0x0815d814`) never runs, so the player's PCM
+  counter does not advance.
+- Video playback decodes about 8 frames, then stops (the guest never enables the display frame-done it waits on).
 - The SM1 audio engine decodes AAC only (libavcodec); other codecs are not wired.
 - No USB, NAND, CE-ATA, AES or bootrom. Full list in the classic README.
 
@@ -73,18 +76,21 @@ code. `tools/ipod_video/navtest.sh` and `appletest.sh` print evidence and assert
 
 ## Where the detail lives
 
-| Document | Contents |
-|---|---|
-| [`hw/arm/ipod_classic/README.md`](hw/arm/ipod_classic/README.md) | S5L8702 memory map, device models, env knobs, snapshots, debugging a running guest |
-| [`hw/arm/ipod_video/README.md`](hw/arm/ipod_video/README.md) | PP5022 memory map, BCM/VideoCore interface, assumptions and deviations |
-| [`docs/classic6g-firmware.md`](docs/classic6g-firmware.md) | `.ipsw`/`]ih[`/IM3 formats, emCORE decrypt, NOR layout, what cannot be dumped |
-| [`docs/video-decoder.md`](docs/video-decoder.md) | The 6G video decoder block |
-| [`docs/debugging-lessons.md`](docs/debugging-lessons.md) | Failure patterns and evidence rules from both ports |
-| [`tools/README.md`](tools/README.md) | Emulator-side tools |
+| Kind | Document | Contents |
+|---|---|---|
+| How-to | [`docs/how-to/debug-a-classic-guest.md`](docs/how-to/debug-a-classic-guest.md) | Boot, screenshots, keys, memory, gdb, pctrace, audio capture, snapshots |
+| How-to | [`docs/how-to/run-an-ipod-video.md`](docs/how-to/run-an-ipod-video.md) | 5G firmware dump, disk build, boot, evidence scripts |
+| Reference | [`hw/arm/ipod_classic/README.md`](hw/arm/ipod_classic/README.md) | S5L8702 memory map, device models, env knobs, snapshot contract |
+| Reference | [`hw/arm/ipod_video/README.md`](hw/arm/ipod_video/README.md) | PP5022 memory map, BCM/VideoCore interface, assumptions and deviations |
+| Reference | [`docs/classic6g-firmware.md`](docs/classic6g-firmware.md) | `.ipsw`/`]ih[`/IM3 formats, emCORE decrypt, NOR layout, what cannot be dumped |
+| Reference | [`docs/video-decoder.md`](docs/video-decoder.md) | The 6G video decoder block and its model |
+| Reference | [`tools/README.md`](tools/README.md) | Tools in this tree |
+| Explanation | [`docs/debugging-lessons.md`](docs/debugging-lessons.md) | Failure patterns and evidence rules from both ports |
 
 ## This repository is a fork
 
-Forked from [devos50/qemu-ios](https://github.com/devos50/qemu-ios) (QEMU 8.2.0), branch `ipod_touch_2g`, which
+Forked from [davidmonterocrespo24/qemu-ipod-classic](https://github.com/davidmonterocrespo24/qemu-ipod-classic),
+itself a fork of [devos50/qemu-ios](https://github.com/devos50/qemu-ios) (QEMU 8.2.0, branch `ipod_touch_2g`), which
 emulates the **iPod Touch 1G and 2G**. That work is here intact and its machines are listed in `-M help`:
 
 - [Running the iPod Touch 1G](https://devos50.github.io/blog/2022/ipod-touch-qemu-pt2/) and the

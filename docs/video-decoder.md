@@ -1,9 +1,11 @@
-# S5L8702 video decoder (`0x39800000`) — reference
+# S5L8702 video decoder (`0x39800000`)
 
-Long-term map of the retailOS video-decode path on the iPod classic 6G, and the
-QEMU model. Terse facts + evidence.
+Reference for the retailOS video-decode path on the iPod classic 6G and its QEMU model.
 
-## Verdict
+**Status:** real playback decodes about 8 frames, then stops: the guest never enables the display frame-done
+(VIC line 30, handler `0x0808b66c`) that its present path waits on. That is a guest-side gap, not the block.
+
+## Overview
 
 Video decode is **not** done by the main ARM. The ARM parses the container,
 SPS/PPS and slice headers and **offloads pixel reconstruction to a hardware
@@ -111,33 +113,7 @@ fmt/geometry rules are fully pinned. The pipe's colour-matrix tables
 | hardware submit | `0x081b65c4` | programs the block + descriptor table, waits for done |
 | display planar-YUV | `0x081445cc` | programs `+0x038..+0x044` for fmt 8/9/10 |
 
-## Runtime (QEMU, `Emedia-sync.img`, staged Star Trek m4v)
+## Env knobs
 
-- With the model on, the tapped AUs decode (first `923 B` SEI+IDR, later tiny
-  P-slices) and the planes are written. Pre-placing a t=15 keyframe AU in
-  `au.bin` puts the TNG starfield on the panel.
-- **Resolved (negative, 2026-10-10):** real playback decodes a burst of ~8 frames and stops because
-the present completion is never armed — the AVS ring is on the mode-0 engine and only the mode-1 path
-arms the display frame-done (VIC line 30, handler `0x0808b66c`), which is registered but never enabled
-(`VIC0 IntEnable` bit 30 stays `0x21a7010f`). No reachable model edge. This is a guest-side gap, not
-the block; the stream-cache/audio stall is the same class. The `0x39300000 frame-done is modelled default-off (`SDO_FRAME_IRQ=1`).
-- The separate IRAM1 blit abort `FUN_0802e5ec` is a guest overrun (owner =
-  SM1/codec audio `pcm_push`; it cannot block the video path).
-  Not a model gap: caught at the store `0x0802e6b0 strhne r3,[r2],#2`, surface
-  `r5=0x08957038` with `[r5+0xc]=0x08957028` (a valid heap base), and the band
-  descriptor at `r4=0x0bb0e798` is byte-identical across two fresh snapshot runs
-  (the model is not corrupting it). `DFAR 0x220428d8` = `0x28d8` past IRAM1 end
-  `0x22040000`; the same snapshot also gave `0x18d8`/`0x24d8` earlier, so the runaway
-  offset varies with playback progress. The runaway is
-  `rect[0xc]` (`0x1d4d8`) added to the plane base + the growing `+0xa48` position term
-  from `FUN_080ab6d0` — a 120 KB band offset into an IRAM1 surface, guest-side. `IRAMSPILL=0x10000` is a
-  measurement aid, not a fix.
-
-## Tooling
-
-- `VDECTRACE=1`, `VDEC_DECODE=1`, `VDEC_AU_FILE`, `VDEC_CFG_FILE`,
-  `DISPLOG=1`, `DISPTRACE=1`, `IRAMSPILL`.
-
-## Evidence
-
-`contrib/plugins/pctrace.c` (pctrace plugin).
+`VDECTRACE=1`, `VDEC_DECODE=1`, `VDEC_AU_FILE`, `VDEC_CFG_FILE`, `DISPLOG=1`, `DISPTRACE=1`. The taps use the
+pctrace plugin (`contrib/plugins/pctrace.c`).
