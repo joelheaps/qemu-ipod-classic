@@ -35,6 +35,7 @@
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "migration/vmstate.h"
 #include "semihosting/semihost.h"
 
 static MemoryRegion *allocate_ram(MemoryRegion *top, const char *name,
@@ -640,6 +641,23 @@ static const MemoryRegionOps ipod_classic_rng_ops = {
     .valid.max_access_size = 4,
 };
 
+/*
+ * The RNG has no DeviceState of its own -- it is a raw IO region over a
+ * g_new0'd S5L8702RNGState -- so register its state directly. Keeping the LCG
+ * seed/state in the stream makes the generator reproducible across a snapshot
+ * exactly as it is across a plain boot, which the firmware relies on.
+ */
+static const VMStateDescription vmstate_ipod_classic_rng = {
+    .name = "s5l8702.rng",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(seed, S5L8702RNGState),
+        VMSTATE_UINT32(state, S5L8702RNGState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void ipod_classic_machine_init(MachineState *machine)
 {
     IPodClassicMachineState *nms = IPOD_CLASSIC_MACHINE(machine);
@@ -683,6 +701,8 @@ static void ipod_classic_machine_init(MachineState *machine)
     }
 
     nms->vic1->daisy = nms->vic0;
+    /* Fixed topology field for pl192_post_load to rebuild daisy_callback. */
+    nms->vic0->daisy_source = nms->vic1;
 
     /* Clock and PLL block. */
     dev = qdev_new(TYPE_IPOD_CLASSIC_CLK);
@@ -893,10 +913,12 @@ static void ipod_classic_machine_init(MachineState *machine)
      * an unmapped block there is not a zero read but a spin with no timeout.
      */
     MemoryRegion *rng_mr = g_new(MemoryRegion, 1);
+    S5L8702RNGState *rng_state = g_new0(S5L8702RNGState, 1);
     memory_region_init_io(rng_mr, NULL, &ipod_classic_rng_ops,
-                          g_new0(S5L8702RNGState, 1), "s5l8702.rng",
+                          rng_state, "s5l8702.rng",
                           S5L8702_RNG_MEM_SIZE);
     memory_region_add_subregion(sysmem, S5L8702_RNG_MEM_BASE, rng_mr);
+    vmstate_register(NULL, 0, &vmstate_ipod_classic_rng, rng_state);
 
     /*
      * SM1 (0x38500000): the audio clock/stream engine. A stateful device that
