@@ -63,7 +63,6 @@
 #include "hw/irq.h"
 #include "qemu/timer.h"
 #include "hw/arm/ipod_classic/ipod_classic_sm1.h"
-#include "hw/arm/ipod_classic/ipod_classic_hle_audio.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
 
 /*
@@ -81,8 +80,6 @@
  * It is modelled anyway because it is a real register and a faked constant here
  * would be exactly the kind of thing that stalls a path we have not yet walked.
  */
-static bool sm1_decode_on(void);
-
 static bool sm1_pos_reg(IPodClassicSM1State *s, hwaddr offset, uint32_t *out)
 {
     for (int idx = 0; idx < S5L8702_SM1_POS_CHANS; idx++) {
@@ -91,23 +88,11 @@ static bool sm1_pos_reg(IPodClassicSM1State *s, hwaddr offset, uint32_t *out)
         if (offset != a48 && offset != a44) {
             continue;
         }
-        /* Position in stereo frames. When the data-path HLE owns playback, use
-         * ITS cursor so pause (frozen), seek (jumped) and track-change (reset)
-         * reflect in the position register; otherwise fall back to the I2S
-         * transmit-sample count. */
-        uint64_t pos;
         /*
-         * Same rule as sm1_stream_pos: with SM1_DECODE the guest's own DMA is
-         * what plays, so the position it reads back has to come from the I2S it
-         * drives. Left on the host cursor the Now Playing screen renders but
-         * its elapsed time sits at 0:00 for ever, because that cursor is not
-         * the one moving.
+         * Position in stereo frames, from the I2S transmit-sample count -- the
+         * real amount of audio clocked out by the guest's own DMA.
          */
-        if (!sm1_decode_on() && ipod_classic_hle_audio_have_pcm()) {
-            pos = ipod_classic_hle_audio_position_frames();
-        } else {
-            pos = s->i2s ? s->i2s->tx_samples / 2 : 0;
-        }
+        uint64_t pos = s->i2s ? s->i2s->tx_samples / 2 : 0;
         /*
          * WRAP THE POSITION INTO THE RING. This is the fix for the wall that
          * fourteen assaults called a "structural deadlock"; see wiki/19 §11.26.
@@ -187,16 +172,10 @@ void ipod_classic_sm1_set_i2s(IPodClassicSM1State *s,
 static uint64_t sm1_stream_pos(IPodClassicSM1State *s)
 {
     /*
-     * With SM1_DECODE the guest's own DMA is what plays the audio, so the
-     * position has to come from the I2S it actually drives. Taking the host
-     * shim's cursor instead stalls us: MEASURED, the render pump froze at ~44
-     * activations even over a 150 s window, because that cursor stops
-     * advancing and so the slot-freeing loop never crosses another boundary.
-     * Without SM1_DECODE the old preference stands, untouched.
+     * The audio the guest's own DMA clocks out: the I2S transmit-sample count
+     * in stereo frames. Every position read and the slot-freeing cadence below
+     * derive from this one real clock.
      */
-    if (!sm1_decode_on() && ipod_classic_hle_audio_have_pcm()) {
-        return ipod_classic_hle_audio_position_frames();
-    }
     return s->i2s ? s->i2s->tx_samples / 2 : 0;
 }
 
@@ -307,116 +286,6 @@ static bool sm1_slots_on(void)
     return on == 1;
 }
 
-/*
- * THE CODEC OUTPUT BUFFERS (SM1_DECODE=1).
- *
- * Where the guest actually reads its audio from is MEASURED, not assumed --
- * which is what the first attempt got wrong (it filled the IRAM1 slot ring,
- * which nothing transports). The pump asks 0x22003810 -> 0x081db4c8 for a
- * buffer, and that function is not a decoder at all: it is a two-entry
- * dispenser handing out one of two FIXED addresses carried as literals,
- *
- *     81db4f0: ldrne r1, =0x08a873c0
- *     81db4f4: ldreq r3, =0x08a8b3c0
- *     81db504: str r1,[r2]        ; hands it over
- *     81db510: mov r0,#0          ; and always reports success
- *
- * then copies 1024 stereo frames out of it (r5*4 = 4096 bytes, measured). So
- * something else is supposed to have FILLED those two buffers, and measured,
- * their contents are all zeros at request 3, 60 and 150 alike. That is the
- * whole silence: every stage below this one works.
- *
- * What should fill them is the MP3 decode the firmware delegates to this
- * engine -- it hands us a descriptor chain at sub-block 4 +0x00 whose buffer
- * carries real MP3 frames. Decoding those the way the undocumented on-chip
- * codec does is not something to reverse-engineer; it is something to EMULATE,
- * and ipod_classic_hle_audio.c already does it with verified output.
- *
- * Deliberately NOT touching hle_np_owns_feed this time: measured, switching
- * the host shim off removed the only audio that did come out (21% non-zero ->
- * 0.2%). If this path works the two should agree, not compete.
- */
-#define SM1_CODEC_BUF_A      0x08a873c0
-#define SM1_CODEC_BUF_B      0x08a8b3c0
-#define SM1_CODEC_BUF_BYTES  4096      /* 1024 stereo frames, measured */
-
-static bool sm1_decode_on(void)
-{
-    static int on = -1;
-    if (on < 0) {
-        const char *e = getenv("SM1_DECODE");
-        on = (e && *e && *e != '0') ? 1 : 0;
-        if (on) {
-            fprintf(stderr, "SM1_DECODE: el motor entrega PCM en los buferes del "
-                    "codec (0x%08x / 0x%08x)\n",
-                    SM1_CODEC_BUF_A, SM1_CODEC_BUF_B);
-        }
-    }
-    return on == 1;
-}
-
-/*
- * THE DATA FLOWS THE OTHER WAY -- corrected, and it matters.
- *
- * The pump ACQUIRES a codec buffer and copies INTO it:
- *
- *     22006488: ldrne r0,[sp,#52]   ; dst = the codec buffer it just acquired
- *     2200648c: ldrne r1,[sp,#28]   ; src = the IRAM1 slot
- *     22006494: blne 0x22000020     ; slot -> codec buffer
- *     220064f0: bl  0x081db520      ; then hands the codec buffer on (lr=0x220064f4)
- *
- * So the codec buffers are the pump's OUTPUT, not its input, and the audio has
- * to already be in the IRAM1 SLOT -- which is what "ready" meant all along.
- * Filling the codec buffers (the previous cut) was writing to the far end of
- * the copy, where the pump promptly overwrote it with the empty slot; that is
- * why they still read as zeros with SM1_DECODE on.
- *
- * This is the same place the very first attempt wrote to, and it measured worse
- * then for three reasons since fixed: the slot-freeing rate was out by 2, the
- * position came from the host cursor instead of the I2S, and it switched the
- * host feed off. None of those is true now.
- */
-static void sm1_fill_slot(unsigned i)
-{
-    static size_t cursor;
-    uint8_t buf[SM1_SLOT_BYTES];
-    size_t n;
-
-    if (!sm1_decode_on() || !ipod_classic_hle_audio_have_pcm()) {
-        return;
-    }
-    /*
-     * SM1_FEED_OFF: switch the host shim's own DMA feed off, so the ONLY route
-     * from decoded PCM to the speaker is this one -- engine buffer, guest render
-     * pump, guest DMA, guest I2S. Purely an attribution control: if the music
-     * survives with it set, the guest's own path is carrying it.
-     */
-    if (getenv("SM1_FEED_OFF")) {
-        static bool told;
-        if (!told) {
-            told = true;
-            ipod_classic_hle_audio_set_np_feed(true);
-            fprintf(stderr, "SM1_FEED_OFF: el atajo del anfitrion queda apagado; "
-                    "el audio solo puede salir por el camino del invitado\n");
-        }
-    }
-
-    n = ipod_classic_hle_audio_copy_pcm(cursor, buf, sizeof(buf));
-    if (n == 0) {
-        return;                         /* nothing decoded yet, or track ended */
-    }
-    if (n < sizeof(buf)) {
-        memset(buf + n, 0, sizeof(buf) - n);
-    }
-    /*
-     * One slot per frame report, in the same ring order the firmware reads
-     * them, so consecutive requests get consecutive audio.
-     */
-    cpu_physical_memory_write(SM1_SLOT_PCM + i * SM1_SLOT_BYTES,
-                              buf, sizeof(buf));
-    cursor += n;
-}
-
 static int sm1_publish_slots(IPodClassicSM1State *s)
 {
     uint16_t h;
@@ -478,37 +347,6 @@ static int sm1_publish_slots(IPodClassicSM1State *s)
         uint64_t played = (pos - base_pos) / (SM1_SLOT_FRAMES / 2);
         while (freed < played + SM1_SLOT_COUNT) {
             unsigned i = (unsigned)(freed % SM1_SLOT_COUNT);
-
-            /*
-             * TRIED AND BACKED OUT: filling the slot with host-decoded PCM.
-             *
-             * The reasoning was that a "ready" slot already CONTAINS decoded
-             * audio (the guard hands its caller the address AND the size, and
-             * 0x22006364 transports that buffer), which would make the engine
-             * the codec -- consistent with the chain it is handed carrying raw
-             * MP3 frames. So the slot was filled from ipod_classic_hle_audio's
-             * verified PCM and hle_np_owns_feed was set so the host shim would
-             * not double-feed the DMA.
-             *
-             * MEASURED, it makes things WORSE, and the control is unambiguous:
-             *
-             *   HLE_AUDIO_DATAPATH alone        21.06% non-zero, peak 32768
-             *   + this fill (np_feed disabled)   0.20-0.47%,     peak 11444
-             *
-             * The 32768 peak that looked like the guest's own path carrying
-             * real audio was the host shim's, still running before the first
-             * slot publish switched it off. Writing PCM into the IRAM1 ring
-             * does NOT get it to the I2S: the pump only ran 21-39 times in
-             * those runs, so nothing transported it. Suppressing the shim
-             * therefore just removed the audio that did work.
-             *
-             * Left as a comment rather than deleted because the reasoning is
-             * still the most likely account of what the engine does -- what it
-             * lacks is the transport, not the idea.
-             */
-
-            /* The engine's real output: PCM into the slot the pump reads from. */
-            sm1_fill_slot(i);
 
             h = cpu_to_le16(1);
             cpu_physical_memory_write(SM1_SLOT_ARRAY + 10 + i * 4, &h, 2);

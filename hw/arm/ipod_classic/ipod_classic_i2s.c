@@ -38,9 +38,6 @@
 #include "hw/core/cpu.h"
 #include "audio/audio.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
-#include "hw/arm/ipod_classic/ipod_classic_hle_audio.h"
-#include "hw/arm/ipod_classic/ipod_classic_hle_np.h"
-#include "hw/arm/ipod_classic/ipod_classic_np_overlay.h"
 
 /* ------------------------------------------------------------- tracing */
 
@@ -472,33 +469,10 @@ static void ipod_classic_i2s_drain(void *opaque)
     if (!s->tx_running || !s->dmac0) {
         return;
     }
-    /*
-     * PAUSE (player control): when the data-path HLE is paused, skip BOTH the
-     * fill AND the paced request+commit. Skipping only the fill is a bug -- the
-     * DMA would re-clock the stale source buffer, tx_samples/commit/cursor would
-     * keep advancing and the codec would buzz the last chunk on loop. Freezing
-     * the drain instead stops tx_samples, emits no TXDB0 writes (the live ring
-     * drains to silence), and keeps the PCM cursor put -- a clean pause.
-     */
-    if (ipod_classic_hle_audio_paused()) {
-        s->next_tick_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 4000000; /* 4ms */
-        timer_mod(s->drain_timer, s->next_tick_ns);
-        return;
-    }
-    /*
-     * DATA-PATH HLE: fill the audio DMA channel's current source segment with
-     * the next chunk of the host-decoded real song, one burst ahead of the
-     * drain, so the paced request below transports the real PCM to the FIFO.
-     * A no-op unless HLE_AUDIO_DATAPATH is set and a track has been decoded.
-     */
-    ipod_classic_hle_audio_fill_dma();
 
     before = s->tx_samples;
     pl080_pace_request(s->dmac0, S5L8702_I2S_DMA_IIS0_TX);
     moved = s->tx_samples - before;   /* 16-bit samples this chunk */
-
-    /* Advance the HLE PCM cursor by what the burst actually consumed. */
-    ipod_classic_hle_audio_commit((uint32_t)moved);
 
     rate = i2s_sample_rate(s);
     if (moved >= 2) {
@@ -620,13 +594,7 @@ static void ipod_classic_i2s_write(void *opaque, hwaddr offset,
 
     switch (offset) {
     case S5L8702_I2S_CLKCON: {
-        bool was_en = s->clkcon & 1;
         s->clkcon = value;
-        /* Disable edge = the retailOS re-configuring the clock for a real play
-         * (boot's silence init never disables). Signal the HLE play trigger. */
-        if (was_en && !(value & 1)) {
-            ipod_classic_hle_audio_notify_clock_reconfig();
-        }
         break;
     }
     case S5L8702_I2S_TXCON:  s->txcon = value;  break;
@@ -636,9 +604,6 @@ static void ipod_classic_i2s_write(void *opaque, hwaddr offset,
         s->tx_running = (value & S5L8702_I2S_TXCOM_RUN) != 0;
         if (s->tx_running && !was_running) {
             i2s_pace_arm(s);
-            ipod_classic_hle_audio_notify_play_start();
-            ipod_classic_hle_np_notify_play_start();
-            ipod_classic_np_overlay_notify_play_start();
         } else if (!s->tx_running && was_running) {
             i2s_pace_disarm(s);
         }
