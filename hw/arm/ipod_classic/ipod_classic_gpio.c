@@ -20,6 +20,7 @@
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
 #include "hw/arm/ipod_classic/ipod_classic_gpio.h"
+#include "hw/arm/ipod_classic/ipod_classic_env.h"
 
 static int gpiotrace = -1;
 
@@ -156,8 +157,21 @@ static void ipod_classic_gpio_reset(DeviceState *dev)
      * device: 0x080aeca4 reads pin 86 to decide "mount" against "no media", so
      * with a drive attached it has to be 1 or the user interface never starts.
      * What the pin is actually wired to on the real board is UNDETERMINED.
+     * GPIO_MEDIA=0/1 overrides the pin; the default follows the media-present
+     * property, which the machine sets from whether a -drive is attached.
      */
-    if (s->media_present) {
+    /*
+     * LCDTYPE=0..3: the panel-type straps, pins 52,53 = PDAT(6) bits 5:4,
+     * read by lcd_get_type() (0x0807ff94). MEASURED on hardware: 2
+     * (16-bit, ILI9320-style command set). The LCD model only decodes the
+     * 8-bit set (types 0/1), so type 2/3 boots exercise the driver's other
+     * path against a panel that ignores it -- expect a blank screen.
+     */
+    if (getenv("LCDTYPE")) {
+        s->pdat[6] |= (atoi(getenv("LCDTYPE")) & 3) << 4;
+    }
+
+    if (ipod_classic_env_bool("GPIO_MEDIA", s->media_present)) {
         s->pdat[S5L8702_GPIO_PIN_MEDIA / 8] |=
             1u << (S5L8702_GPIO_PIN_MEDIA % 8);
     }

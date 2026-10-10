@@ -104,7 +104,10 @@ struct IPodClassicGPIOState {
     /* What the pins read as. Inputs only; see the note on writes in the .c. */
     uint32_t pdat[S5L8702_GPIO_GROUPS];
 
-    /* Property: drives pin 86. Set by the machine from drive_get(IF_IDE). */
+    /*
+     * Property: default level of pin 86. Set by the machine from
+     * drive_get(IF_IDE); the GPIO_MEDIA env flag overrides it.
+     */
     bool media_present;
 };
 
