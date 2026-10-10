@@ -53,10 +53,40 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "hw/i2c/i2c.h"
+#include "hw/core/cpu.h"
 #include "migration/vmstate.h"
 #include "sysemu/rtc.h"
+#include "sysemu/sysemu.h"
 #include "hw/arm/ipod_classic/ipod_classic_pmu.h"
+#include "hw/arm/ipod_classic/ipod_classic_env.h"
+
+/*
+ * PMUHOLD=on forces the hold switch ENGAGED (GPIOSTAT bit 1 clear), so every
+ * button is dropped exactly as on hardware. Default off: a machine with no
+ * switch to flip has to boot with it off or it cannot be used.
+ */
+static bool pmu_hold_engaged(void)
+{
+    return ipod_classic_env_bool("PMUHOLD", false);
+}
+
+/*
+ * PMUOOCSTAT=raw leaves the on/off-controller status at whatever was written
+ * (zero at reset), reproducing the guest's "battery empty" software reset.
+ * Default (healthy) forces the powered status Apple's power manager wants.
+ */
+static bool pmu_oocstat_healthy(void)
+{
+    const char *e = getenv("PMUOOCSTAT");
+
+    if (!e || !*e) {
+        return true;
+    }
+    return strcmp(e, "raw") != 0 && strcmp(e, "0") != 0 &&
+           strcmp(e, "off") != 0;
+}
 
 /*
  * PMUBATT=N overrides the raw battery reading, 0..1023.
@@ -106,24 +136,25 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
         break;
     case PCF50635_REG_GPIOSTAT:
         /*
-         * The hold switch, reported OPEN unconditionally. See the long note at
-         * the reset function for why "open" is the only usable value on a
-         * machine with no switch to flip -- and why it MUST NOT depend on
-         * whatever a write has left in s->reg[0x87]. Apple's own GPIO code
-         * writes this register (measured: a byte 0x87 goes to reg 0x87), so the
-         * stored value is not reliably HOLD_OFF; forcing the read makes the
-         * keycode dispatcher's gate see "open" no matter what was written.
+         * The hold switch, reported OPEN unless PMUHOLD=on. See the long note at
+         * the reset function for why this must not depend on whatever a write
+         * has left in s->reg[0x87]: Apple's own GPIO code writes this register
+         * (measured: a byte 0x87 goes to reg 0x87), so the stored value is not
+         * reliably HOLD_OFF. Forcing the read makes the keycode dispatcher's
+         * gate see "open" no matter what was written.
          */
-        val = PCF50635_GPIOSTAT_HOLD_OFF;
+        val = s->hold_engaged ? 0 : PCF50635_GPIOSTAT_HOLD_OFF;
         break;
     case PCF5063X_REG_OOCSTAT:
         /*
-         * On/off-controller status, forced to a healthy powered value. Apple's
-         * power manager polls this; with BATOK/SYSOK clear it concludes the
-         * battery is empty and software-resets ("battery low", tag "--------").
-         * A plain register file leaves it stale/zero. See the header.
+         * On/off-controller status, forced to a healthy powered value unless
+         * PMUOOCSTAT=raw. Apple's power manager polls this; with BATOK/SYSOK
+         * clear it concludes the battery is empty and software-resets ("battery
+         * low", tag "--------"). A plain register file leaves it stale/zero,
+         * which is the realistic failure mode the raw setting reproduces. See
+         * the header.
          */
-        val = PCF5063X_OOCSTAT_HEALTHY;
+        val = pmu_oocstat_healthy() ? PCF5063X_OOCSTAT_HEALTHY : s->reg[addr];
         break;
     case PCF5063X_REG_MBCS1:
         /*
@@ -133,38 +164,23 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
          */
         val = PCF5063X_MBCS1_HEALTHY;
         /*
-         * PMUCHARGER=1: report external power present and OK.
+         * External power: the wall adapter unless PMUCHARGER says otherwise
+         * (PMUCHARGER=usb for USB power, PMUCHARGER=none for battery only).
          *
-         * MEASURED: with the default "on battery, no charger" report the
-         * retailOS eventually puts up "Low Battery -- Connect to Power" and
-         * stops playing, and raising the battery ADC to full scale does NOT
-         * prevent it (see the note above pmu_battery_raw). That is coherent --
-         * it is asking to be plugged in, and nothing here ever says it is.
-         *
-         * An emulated iPod has no cell to discharge, so "sitting in a dock"
-         * is at least as honest a description of it as "running on a battery
-         * that never moves", and it is the one the firmware can act on. Kept
-         * behind a variable because it IS a model choice, not a measurement:
-         * which of USB or adapter a real device would report depends on what
-         * it is plugged into, and we are plugged into nothing.
+         * MEASURED (1.1.2): on battery alone the retailOS eventually puts up
+         * "Low Battery -- Connect to Power", and raising the battery ADC to
+         * full scale does NOT prevent it -- it wants to be told it is plugged
+         * in. An emulated iPod has no cell to discharge, so "sitting on a
+         * charger" is the honest default. Also MEASURED on 1.1.2: with the
+         * adapter, playback switched to the full-screen "Charging" mode, as a
+         * real iPod does; PMUCHARGER=usb is the one that stayed usable there.
          */
         {
             const char *e = getenv("PMUCHARGER");
-            if (e && *e) {
-                /*
-                 * WHICH KIND of external power matters, and getting it wrong
-                 * was MEASURED: reporting the wall ADAPTER puts the device
-                 * into its full-screen "Charging" mode and it stops playing --
-                 * which is what a real iPod does on a charger, so the model was
-                 * right and the choice was wrong. USB power is the one that
-                 * leaves it usable. Default is USB; PMUCHARGER=adapter keeps
-                 * the other one reachable for testing that screen on purpose.
-                 */
-                if (!strcmp(e, "adapter")) {
-                    val |= PCF5063X_MBCS1_ADAPTPRES | PCF5063X_MBCS1_ADAPTOK;
-                } else {
-                    val |= PCF5063X_MBCS1_USBPRES | PCF5063X_MBCS1_USBOK;
-                }
+            if (!e || !*e || !strcmp(e, "adapter")) {
+                val |= PCF5063X_MBCS1_ADAPTPRES | PCF5063X_MBCS1_ADAPTOK;
+            } else if (strcmp(e, "none")) {
+                val |= PCF5063X_MBCS1_USBPRES | PCF5063X_MBCS1_USBOK;
             }
         }
         break;
@@ -186,12 +202,41 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
          * second, minute, hour, weekday, day, month, year (year is 00..99).
          * qemu_get_timedate is the same source hw/rtc/pl031.c uses, so -rtc on
          * the command line works here as it does everywhere else in QEMU.
+         *
+         * A DEBUGGER MUST NOT MOVE THE CLOCK. qemu_get_timedate follows a host
+         * clock (HOST by default), which keeps running while QEMU has the guest
+         * stopped at a breakpoint. Stop for a minute and resume and the guest
+         * sees a minute of RTC time that never happened; its deadlock watchdog
+         * measures elapsed seconds and can then reboot the device. Feed the
+         * same clock but subtract the host time that passed while the virtual
+         * clock did not, so a gdb stop is invisible: the RTC advances only while
+         * the guest is actually executing. `-rtc clock=vm` already does this,
+         * so leave that case alone. MEASURED: a 45 s stop at a FillRect
+         * breakpoint left timer E's TECNT frozen (18886 -> 18886) and produced
+         * no SWRCON reset; this change makes the RTC follow the same virtual
+         * clock instead of the host one.
          */
         {
             struct tm tm;
             unsigned v;
 
-            qemu_get_timedate(&tm, 0);
+            if (rtc_clock == QEMU_CLOCK_VIRTUAL) {
+                qemu_get_timedate(&tm, 0);
+            } else {
+                int64_t host_ms = qemu_clock_get_ms(rtc_clock) -
+                                  s->rtc_base_ms;
+                int64_t virt_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) -
+                                  s->rtc_virt_base_ms;
+
+                qemu_get_timedate(&tm, -(host_ms - virt_ms) / 1000);
+            }
+            if (getenv("PMURTC")) {
+                fprintf(stderr, "PMURTC: reg 0x%02x = %04d-%02d-%02d "
+                        "%02d:%02d:%02d (virt %" PRId64 " ms)\n", addr,
+                        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                        tm.tm_hour, tm.tm_min, tm.tm_sec,
+                        qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL));
+            }
             switch (addr - PCF5063X_REG_RTCSC) {
             case 0: v = tm.tm_sec;          break;
             case 1: v = tm.tm_min;          break;
@@ -210,6 +255,8 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
 
     /*
      * PMUTRACE=1: which registers does Apple's power manager actually consult?
+     * (pmu_reg_write below also logs writes with the guest PC, which is how the
+     * Settings > Brightness slider's mapping to PMU 0x28 is observed.)
      *
      * Needed because raising the battery ADC to full scale (PMUBATT=1023) did
      * NOT stop retailOS putting up "low battery -- connect to power", so the
@@ -231,6 +278,23 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
 
 static void pmu_reg_write(IPodClassicPMUState *s, uint8_t addr, uint8_t val)
 {
+    /*
+     * PMUTRACE=1 also logs WRITES, not just reads. The backlight brightness is
+     * PMU register 0x28 (Rockbox backlight-6g.c: backlight_hw_brightness()
+     * does pmu_write(0x28, brightness)), so this is how the Settings >
+     * Brightness slider's mapping to the hardware is observed: one line per
+     * slider step. Limit per address so a boot log stays readable (64 covers
+     * a 0..63 range on a slider).
+     */
+    if (getenv("PMUTRACE")) {
+        static uint32_t wseen[256];
+        if (wseen[addr]++ < 64) {
+            CPUState *cs = current_cpu;
+            uint32_t pc = cs ? (uint32_t)CPU_GET_CLASS(cs)->get_pc(cs) : 0;
+            fprintf(stderr, "PMUTRACE: write reg 0x%02x = 0x%02x pc=%08x\n",
+                    addr, val, pc);
+        }
+    }
     switch (addr) {
     case PCF5063X_REG_INT1:
     case PCF5063X_REG_INT2:
@@ -351,6 +415,13 @@ static void ipod_classic_pmu_reset(DeviceState *dev)
     pmu_start_adc(s);
 
     /*
+     * Base for the virtualised RTC (see the RTC case in pmu_reg_read): the host
+     * clock the RTC follows, and the virtual clock, at the moment of reset.
+     */
+    s->rtc_base_ms = qemu_clock_get_ms(rtc_clock);
+    s->rtc_virt_base_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+
+    /*
      * THE HOLD SWITCH, and it is not decoration: with this bit at zero every
      * button press on the click wheel is silently thrown away.
      *
@@ -385,10 +456,13 @@ static void ipod_classic_pmu_reset(DeviceState *dev)
      * failure looked like a wheel bug rather than a hold switch.
      *
      * CONVENIENCE VALUE, and marked as one: a machine with no hold switch to
-     * flip has to boot with it off or it cannot be used. The other two bits
+     * flip has to boot with it off or it cannot be used. PMUHOLD=on forces the
+     * switch engaged instead, which drops every button. The other two bits
      * stay zero -- Rockbox marks both "TBC" and nothing we have reads them.
      */
-    s->reg[PCF50635_REG_GPIOSTAT] = PCF50635_GPIOSTAT_HOLD_OFF;
+    s->hold_engaged = pmu_hold_engaged();
+    s->reg[PCF50635_REG_GPIOSTAT] =
+        s->hold_engaged ? 0 : PCF50635_GPIOSTAT_HOLD_OFF;
 
     /*
      * Power-status registers seeded to their healthy powered values so a
@@ -396,15 +470,62 @@ static void ipod_classic_pmu_reset(DeviceState *dev)
      * every read anyway (see the OOCSTAT/MBCS1 cases and the header note). This
      * is what stops Apple's power manager from deciding the battery is empty and
      * software-resetting to the "--------" image a few seconds into the boot.
+     * With PMUOOCSTAT=raw the seed is left at zero so the raw failure mode is
+     * reachable.
      */
-    s->reg[PCF5063X_REG_OOCSTAT] = PCF5063X_OOCSTAT_HEALTHY;
+    s->reg[PCF5063X_REG_OOCSTAT] =
+        pmu_oocstat_healthy() ? PCF5063X_OOCSTAT_HEALTHY : 0;
     s->reg[PCF5063X_REG_MBCS1] = PCF5063X_MBCS1_HEALTHY;
+
+    /*
+     * Report a cold boot (see the header): the device has just come out of
+     * NoPower, so COLDBOOT is set. Rockbox's pmu_is_hibernated() reads this and
+     * GPIO3CFG; with the bit clear it decides the machine is resuming from
+     * hibernation and calls launch_onb() before anything else, which reaches
+     * the unmodelled SPI/NOR. Real silicon sets this at power-on; the driver's
+     * own pmu_preinit() clears it by writing 0 to OOCSHDWN. Seeded at device
+     * reset, the closest thing this machine has to a power-on reset (the clk
+     * model reports a hardware reset the same way).
+     */
+    s->reg[PCF5063X_REG_OOCSHDWN] = PCF5063X_OOCSHDWN_COLDBOOT;
+}
+
+static int ipod_classic_pmu_pre_save(void *opaque)
+{
+    IPodClassicPMUState *s = opaque;
+    struct tm tm;
+
+    if (rtc_clock == QEMU_CLOCK_VIRTUAL) {
+        /* The read path ignores the bases in this mode; store the raw time. */
+        qemu_get_timedate(&tm, 0);
+    } else {
+        int64_t host_ms = qemu_clock_get_ms(rtc_clock) - s->rtc_base_ms;
+        int64_t virt_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) -
+                          s->rtc_virt_base_ms;
+        qemu_get_timedate(&tm, -(host_ms - virt_ms) / 1000);
+    }
+    s->rtc_guest_ms = (int64_t)qemu_timedate_diff(&tm) * 1000;
+    return 0;
+}
+
+static int ipod_classic_pmu_post_load(void *opaque, int version_id)
+{
+    IPodClassicPMUState *s = opaque;
+
+    if (rtc_clock != QEMU_CLOCK_VIRTUAL) {
+        /* Continue the guest RTC from the saved value, on virtual time only. */
+        s->rtc_base_ms = s->rtc_guest_ms;
+        s->rtc_virt_base_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    }
+    return 0;
 }
 
 static const VMStateDescription vmstate_ipod_classic_pmu = {
     .name = TYPE_IPOD_CLASSIC_PMU,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 5,
+    .minimum_version_id = 4,
+    .pre_save = ipod_classic_pmu_pre_save,
+    .post_load = ipod_classic_pmu_post_load,
     .fields = (VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, IPodClassicPMUState),
         VMSTATE_UINT8_ARRAY(reg, IPodClassicPMUState, S5L8702_PMU_NUM_REGS),
@@ -412,9 +533,50 @@ static const VMStateDescription vmstate_ipod_classic_pmu = {
         VMSTATE_BOOL(addr_pending, IPodClassicPMUState),
         VMSTATE_UINT8(addr_saved, IPodClassicPMUState),
         VMSTATE_BOOL(wrote_data, IPodClassicPMUState),
+        VMSTATE_INT64(rtc_base_ms, IPodClassicPMUState),
+        VMSTATE_INT64(rtc_virt_base_ms, IPodClassicPMUState),
+        VMSTATE_INT64(rtc_guest_ms, IPodClassicPMUState),
+        VMSTATE_BOOL_V(hold_engaged, IPodClassicPMUState, 5),
         VMSTATE_END_OF_LIST()
     },
 };
+
+/*
+ * Runtime hold-switch control: qom-set flips the GPIOSTAT bit the guest
+ * polls (hold_gate 0x0807c010 -> pmu_button_read 0x082dc010 -> i2c_read_reg
+ * of 0x87, bit 1). A real GPIO edge also latches INT6 bit GPIO2 (Rockbox
+ * pmu-6g.c: the EINT ISR reads INT1/INT2/INT6 read-to-clear, then re-reads
+ * GPIOSTAT when INT6 GPIO2 is set), so a change latches it here too; INT6
+ * already reads-to-clear above. The chip IRQ pin stays unwired (see the file
+ * header): retailOS never reads INT6 nor waits on a PMU IRQ for hold, it
+ * polls GPIOSTAT per input event, so the latch is observable state, not load-
+ * bearing. PMUHOLD remains the boot-time default; reset re-seeds it.
+ */
+static bool ipod_classic_pmu_get_hold_engaged(Object *obj, Error **errp)
+{
+    return IPOD_CLASSIC_PMU(obj)->hold_engaged;
+}
+
+static void ipod_classic_pmu_set_hold_engaged(Object *obj, bool value,
+                                              Error **errp)
+{
+    IPodClassicPMUState *s = IPOD_CLASSIC_PMU(obj);
+
+    if (value != s->hold_engaged) {
+        s->hold_engaged = value;
+        s->reg[PCF50635_REG_INT6] |= PCF50635_INT6_GPIO2;
+    }
+}
+
+static void ipod_classic_pmu_init(Object *obj)
+{
+    object_property_add_bool(obj, "hold-engaged",
+                             ipod_classic_pmu_get_hold_engaged,
+                             ipod_classic_pmu_set_hold_engaged);
+    object_property_set_description(obj, "hold-engaged",
+        "Hold switch state. Flips the GPIOSTAT bit the guest polls and "
+        "latches the INT6 GPIO2 edge bit. PMUHOLD is the boot-time default.");
+}
 
 static void ipod_classic_pmu_class_init(ObjectClass *klass, void *data)
 {
@@ -433,6 +595,7 @@ static const TypeInfo ipod_classic_pmu_info = {
     .name          = TYPE_IPOD_CLASSIC_PMU,
     .parent        = TYPE_I2C_SLAVE,
     .instance_size = sizeof(IPodClassicPMUState),
+    .instance_init = ipod_classic_pmu_init,
     .class_init    = ipod_classic_pmu_class_init,
 };
 

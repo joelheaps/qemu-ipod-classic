@@ -59,6 +59,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicPMUState, IPOD_CLASSIC_PMU)
 #define PCF5063X_ADCS3_ADCRDY     0x80
 
 /*
+ * OOCSHDWN (0x0c) bits, from Rockbox's pcf5063x.h: GOSTDBY 0x01, TOTRST 0x04,
+ * COLDBOOT 0x08. COLDBOOT is read-only status on the real part: the PMU sets it
+ * while it has been through the NoPower state, and it goes away when the driver
+ * writes OOCSHDWN (Rockbox's pmu_preinit() writes 0 there, which is the first
+ * thing the bootloader does after pmu_is_hibernated()). Seeding it models the
+ * power-on reset a cold boot is; without it pmu_is_hibernated() -- which is
+ * "!COLDBOOT && !GPIO3CFG" -- reports hibernation on every boot and the
+ * bootloader takes the SPI/NOR path instead of the normal one.
+ */
+#define PCF5063X_OOCSHDWN_COLDBOOT 0x08
+
+/*
  * Power-status registers, and the healthy values a running iPod reports.
  *
  * OOCSTAT (0x12) is the on/off-controller status. Bits, from Rockbox's
@@ -78,7 +90,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicPMUState, IPOD_CLASSIC_PMU)
  * OK, running on battery with no charger fault". OOCSTAT_HEALTHY sets
  * ONKEY|SYSOK|BATOK|TMPOK; MBCS1_HEALTHY is TBAT_OK with nothing else, matching
  * the emulated "no USB/adapter" reality (Rockbox reads MBCS1 for USB/FireWire
- * presence and this is the state it already expects).
+ * presence and this is the state it already expects). PMUOOCSTAT=raw reports the
+ * stored OOCSTAT value instead, reproducing the "battery empty" reset.
  */
 #define PCF5063X_OOCSTAT_HEALTHY  0xe1   /* ONKEY|SYSOK|BATOK|TMPOK */
 #define PCF5063X_MBCS1_USBPRES    0x01
@@ -93,9 +106,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicPMUState, IPOD_CLASSIC_PMU)
  * "holdswitch = !(GPIOSTAT & GPIO2)", so SET means hold is OFF. Apple's
  * keycode dispatcher reaches the same conclusion from the other direction --
  * see the long note at the reset function. Clear it and no button on the
- * click wheel does anything at all.
+ * click wheel does anything at all. PMUHOLD=on models the switch engaged
+ * (bit clear) instead of the default off.
  */
 #define PCF50635_GPIOSTAT_HOLD_OFF  0x02
+
+/*
+ * INT6 (0x85) GPIO2 edge latch, from Rockbox's pmu-target.h (marked TBC
+ * there): a GPIO edge latches the bit; reading INT6 clears it. The mask
+ * INT6M gates only the IRQ pin, not the latch. The pin itself is unwired in
+ * this model, as is the whole chip interrupt output; the latch is what a
+ * driver can observe.
+ */
+#define PCF50635_INT6_GPIO2  0x02
 
 /*
  * ASSUMED. 844 of 1023 is 3900 mV through Rockbox's own conversion in
@@ -120,6 +143,33 @@ struct IPodClassicPMUState {
      */
     uint8_t addr_saved;
     bool wrote_data;
+
+    /*
+     * Runtime hold-switch state. Seeded from PMUHOLD at reset (the boot-time
+     * default); the "hold-engaged" QOM property flips it while the guest
+     * runs, which is what the monitor qom-set path drives.
+     */
+    bool hold_engaged;
+
+    /*
+     * RTC virtualisation. The PCF50635 RTC follows host wall time (the same
+     * qemu_get_timedate source hw/rtc/pl031.c uses), and that clock keeps
+     * running while a debugger has the guest stopped, so the guest wakes with a
+     * stale time base. Capture the host clock and the virtual clock at reset so
+     * a read can subtract the time the guest spent stopped and hand the guest a
+     * clock that only advances while it is actually running. See the RTC case
+     * in ipod_classic_pmu.c.
+     */
+    int64_t rtc_base_ms;
+    int64_t rtc_virt_base_ms;
+    /*
+     * The guest-visible RTC (ms since the epoch) captured at save time. On
+     * load the bases above are re-based onto it so the guest clock continues
+     * from exactly where it was saved and then advances with the virtual
+     * clock only -- without this a fresh process starts from its own host
+     * wall time and the guest date jumps by the gap between save and restore.
+     */
+    int64_t rtc_guest_ms;
 };
 
 #endif
