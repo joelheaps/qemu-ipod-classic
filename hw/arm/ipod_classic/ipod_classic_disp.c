@@ -387,10 +387,97 @@ static bool disp_draw_layer(IPodClassicDispState *s, int k, uint16_t *fb,
     return true;
 }
 
+/*
+ * Planar-YUV layer (display-pipe "fmt 8"). The decoded video planes are handed
+ * to +0x038 (Y), +0x03c (U) and +0x044 (V) -- +0x040 is written 0 -- and the
+ * pipe converts them to the panel's RGB565 image. This is NOT one of the five
+ * RGB layer slots: the guest's LCD driver (0x081445cc case 5) programs it as a
+ * separate blit with its own destination rectangle +0x030 (origin, (y|x<<16))
+ * and +0x034 (limit, ((y+h)|(x+w)<<16)).
+ *
+ * Stride is the fixed 4:2:0 rule (Y = dest width, chroma = width/2); the video
+ * is 320x240 with no scaling. Colour conversion is BT.601 studio-range; the pipe
+ * carries coefficient tables at +0x0f0 but their exact encoding is not pinned
+ * (open in the contract), so this is the standard matrix, labelled as such.
+ */
+static bool disp_draw_yuv_layer(IPodClassicDispState *s, uint16_t *fb,
+                                unsigned width, unsigned height)
+{
+    uint32_t ysrc = s->reg[S5L8702_DISP_SRC_PLANE0 >> 2];
+    uint32_t usrc = s->reg[(S5L8702_DISP_SRC_PLANE0 + 4) >> 2];
+    uint32_t vsrc = s->reg[S5L8702_DISP_SRC_PLANE3 >> 2];
+    uint32_t origin = s->reg[S5L8702_DISP_DST_ORIGIN >> 2];
+    uint32_t limit  = s->reg[S5L8702_DISP_DST_LIMIT >> 2];
+    int x0 = (int16_t)(origin >> 16), y0 = (int16_t)(origin & 0xffff);
+    int x1 = (int16_t)(limit >> 16),  y1 = (int16_t)(limit & 0xffff);
+    int dw = x1 - x0, dh = y1 - y0;
+
+    if (ysrc == 0 || usrc == 0 || vsrc == 0 || dw <= 0 || dh <= 0) {
+        return false;
+    }
+    /*
+     * Only the full-panel blit is the video layer. The user interface also
+     * programs this path (the episode list writes a 240x240 destination), so
+     * without this gate the UI's planar surface would be drawn as YUV and
+     * corrupt the screen. This is a heuristic until the fmt/geometry rules are
+     * fully pinned.
+     */
+    if (x1 != (int)width || y1 != (int)height) {
+        return false;
+    }
+    /* No scaling: clip the destination rect to the panel. */
+    if (x0 < 0) { dw += x0; x0 = 0; }
+    if (y0 < 0) { dh += y0; y0 = 0; }
+    if (x0 + dw > (int)width) {
+        dw = width - x0;
+    }
+    if (y0 + dh > (int)height) {
+        dh = height - y0;
+    }
+    if (dw <= 0 || dh <= 0 || (unsigned)dw > sizeof(s->rowbuf)) {
+        return false;
+    }
+
+    for (int row = 0; row < dh; row++) {
+        const uint8_t *yp = s->rowbuf;
+        const uint8_t *up = s->rowbuf + width;      /* chroma <= width/2 */
+        const uint8_t *vp = s->rowbuf + width + dw / 2;
+        uint16_t *dst = fb + (y0 + row) * width + x0;
+        int cw = dw / 2;
+
+        address_space_read(&address_space_memory,
+                           ysrc + (hwaddr)row * dw, MEMTXATTRS_UNSPECIFIED,
+                           s->rowbuf, dw);
+        address_space_read(&address_space_memory,
+                           usrc + (hwaddr)(row / 2) * cw,
+                           MEMTXATTRS_UNSPECIFIED, s->rowbuf + width, cw);
+        address_space_read(&address_space_memory,
+                           vsrc + (hwaddr)(row / 2) * cw,
+                           MEMTXATTRS_UNSPECIFIED,
+                           s->rowbuf + width + cw, cw);
+        for (int i = 0; i < dw; i++) {
+            int c = (int)yp[i] - 16;
+            int d = (int)up[i / 2] - 128;
+            int e = (int)vp[i / 2] - 128;
+            int r = (298 * c + 409 * e + 128) >> 8;
+            int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
+            int b = (298 * c + 516 * d + 128) >> 8;
+            r = r < 0 ? 0 : r > 255 ? 255 : r;
+            g = g < 0 ? 0 : g > 255 ? 255 : g;
+            b = b < 0 ? 0 : b > 255 ? 255 : b;
+            dst[i] = disp_rgb565(r, g, b);
+        }
+    }
+    return true;
+}
+
 bool ipod_classic_disp_compose(IPodClassicDispState *s, uint16_t *fb,
                                unsigned width, unsigned height)
 {
     bool drew = false;
+
+    /* The video layer is at the back: the UI layers composite over it. */
+    drew |= disp_draw_yuv_layer(s, fb, width, height);
 
     /*
      * Slot order is Z order, lowest index at the back. INFERRED, but a
