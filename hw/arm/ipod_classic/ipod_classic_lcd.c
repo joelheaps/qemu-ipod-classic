@@ -56,6 +56,7 @@
 #include "ui/pixel_ops.h"
 #include "hw/arm/ipod_classic/ipod_classic_lcd.h"
 #include "hw/arm/ipod_classic/ipod_classic_disp.h"
+#include "hw/arm/ipod_classic/ipod_classic_env.h"
 
 /*
  * INSTRUMENTATION ONLY -- LCDTRACE=1 in the environment prints every access to
@@ -148,6 +149,12 @@ static void panel_command(IPodClassicLCDState *s, uint8_t cmd)
 
     case PANEL_CMD_DISPOFF:
         s->display_on = false;
+        /*
+         * Display off blanks the panel, not just the layer source: clear the
+         * image memory so a later LCD_DISPON=0 boot cannot show a stale frame.
+         */
+        memset(s->fb, 0, sizeof(s->fb));
+        s->dirty = true;
         s->phase = S5L8702_PANEL_IDLE;
         s->param_want = 0;
         break;
@@ -576,7 +583,21 @@ static void ipod_classic_lcd_gfx_update(void *opaque)
      * untested because no guest we have traced ever uses both paths: the
      * retailOS pushes zero pixels through the port, and lcdtest.S programs no
      * layers.
+     *
+     * A panel whose display is OFF shows nothing. LCD_DISPON=0 starts with it
+     * off (the reset seeds display_on from the flag) and leaves it off until the
+     * guest sends its own 0x29; until then the panel is blank, whatever is in
+     * image memory or in the layers. Default on: always show image memory.
      */
+    if (!s->display_on) {
+        memset(s->fb, 0, sizeof(s->fb));
+        if (s->dirty) {
+            s->dirty = false;
+            dpy_gfx_update_full(s->con);
+        }
+        return;
+    }
+
     if (s->disp && ipod_classic_disp_compose(s->disp, s->fb,
                                              S5L8702_PANEL_WIDTH,
                                              S5L8702_PANEL_HEIGHT)) {
@@ -641,9 +662,10 @@ static void ipod_classic_lcd_reset(DeviceState *dev)
      * The guest never sends 0x29 (display on) in any boot measured so far, and
      * a panel that stays dark until it does would hide real pixels behind an
      * unmodelled command. We show whatever is in image memory. NOTE: this is a
-     * convenience value, not a measurement.
+     * convenience value, not a measurement. LCD_DISPON=0 requires the guest's
+     * own 0x29 before the panel shows anything.
      */
-    s->display_on = true;
+    s->display_on = ipod_classic_env_bool("LCD_DISPON", true);
     s->dirty = true;
 }
 
@@ -669,10 +691,26 @@ static void ipod_classic_lcd_realize(DeviceState *dev, Error **errp)
     dpy_gfx_replace_surface(s->con, surface);
 }
 
+static int ipod_classic_lcd_post_load(void *opaque, int version_id)
+{
+    IPodClassicLCDState *s = opaque;
+
+    /* The frame-done line is a sysbus output; re-drive it. */
+    if (s->irq_pending) {
+        qemu_irq_raise(s->irq);
+    } else {
+        qemu_irq_lower(s->irq);
+    }
+    /* Force one refresh of the restored framebuffer. */
+    s->dirty = true;
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_classic_lcd = {
     .name = TYPE_IPOD_CLASSIC_LCD,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
+    .post_load = ipod_classic_lcd_post_load,
     .fields = (VMStateField[]) {
         VMSTATE_UINT32(con_reg, IPodClassicLCDState),
         VMSTATE_UINT32(intcon, IPodClassicLCDState),
@@ -701,6 +739,11 @@ static const VMStateDescription vmstate_ipod_classic_lcd = {
         VMSTATE_UINT8(param_n, IPodClassicLCDState),
         VMSTATE_UINT8(param_want, IPodClassicLCDState),
         VMSTATE_BOOL(display_on, IPodClassicLCDState),
+        VMSTATE_BOOL(irq_pending, IPodClassicLCDState),
+        VMSTATE_BOOL(dirty, IPodClassicLCDState),
+        VMSTATE_UINT64(pixels_this_frame, IPodClassicLCDState),
+        VMSTATE_UINT64(composed_frames, IPodClassicLCDState),
+        VMSTATE_TIMER_PTR(irq_off, IPodClassicLCDState),
         VMSTATE_END_OF_LIST()
     },
 };
