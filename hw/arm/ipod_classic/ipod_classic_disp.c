@@ -233,7 +233,11 @@ static bool disp_alpha_on(void)
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("DISP_ALPHA");
-        on = (e && *e && *e != '0') ? 1 : 0;
+        /* Source-over is a correctness fix of the compositor (wiki/19 s11.119):
+         * the layers are front-to-back and the 32-bit layer really carries an
+         * alpha channel, so dropping it hid the whole Now Playing screen. ON by
+         * default; DISP_ALPHA=0 restores the old back-to-front opaque order. */
+        on = (e && *e && *e == '0') ? 0 : 1;
         if (on) {
             fprintf(stderr, "DISP_ALPHA: capas compuestas de delante a atras con alfa\n");
         }
