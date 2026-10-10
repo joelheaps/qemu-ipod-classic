@@ -1,0 +1,13 @@
+#!/bin/sh
+#MISE description="Run retailOS 2.0.5 in an SDL window (scroll or q/e: wheel; left click or Enter: select; right click or w: menu; a/d prev/next, s play)"
+#MISE depends=["emulator:build"]
+#
+# A visible SDL window needs the host X socket/cookie mounted, which [tasks.sh]'s
+# dev container does not provide, so the docker run line is kept here. Use emulator:live for the shared, logged window.
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+ASSETS_MOUNT=$( [ -L assets/.main ] && echo "-v $(readlink -f assets/.main):$(readlink -f assets/.main)" )
+exec docker run --rm -i --user "$(id -u):$(id -g)" -v "$PWD:$PWD" $ASSETS_MOUNT -w "$PWD" \
+  -v /tmp/.X11-unix:/tmp/.X11-unix -v "$XAUTHORITY:/tmp/xauth:ro" \
+  -e DISPLAY="$DISPLAY" -e XAUTHORITY=/tmp/xauth -e SDL_VIDEODRIVER=x11 ipod-qemu-build \
+  env T=0 tools/ipod_classic/boot205.sh -display sdl "$@"

@@ -1,0 +1,5 @@
+#!/bin/sh
+#MISE description="Build the dev Docker image ipod-qemu-build (emulator builds)"
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+docker build -t ipod-qemu-build tools/docker

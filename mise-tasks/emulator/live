@@ -1,0 +1,69 @@
+#!/bin/sh
+#MISE description="(Re)start the visible SDL window 'ipod-live' on OSOS (default: stock), with monitor $SCRATCH/live.sock and gdb :1405. Resolves DISPLAY/XAUTHORITY when unset and logs the OSOS md5 to $SCRATCH/live.osos; DRYRUN=1 only validates"
+#MISE depends=["emulator:build"]
+#
+# Moved verbatim from tools/live.sh. Non-interactive shells (and anything not started from
+# the GNOME session) usually have DISPLAY/XAUTHORITY unset, which used to fail
+# *after* `docker rm -f ipod-live` and kill the user's window. So resolve them
+# first and fail before touching the container. The OSOS that the window runs is
+# logged (echo + live.osos) because the window silently kept whatever build it
+# was started with.
+#
+# Env: DISK (default assets/disks/Emedia-sync.img), FWGUID, IRAMSPILL (defaults above), AUDIO=0 (no host audio), OSOS (default assets/firmware/2.0.5/osos_decrypted.bin), CONTAINER (default
+# ipod-live; test seam), XAUTHORITY_DIR (default /run/user/$(id -u); test seam),
+# DRYRUN=1 (resolve + validate + log, print nothing is started).
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+# Defaults for the playable setup (override or set empty-to-skip via env): the synced one-track
+# disk, its FireWire GUID (the library DB is signed with it) and IRAMSPILL (see ipod_classic.c).
+: "${DISK:=assets/disks/Emedia-sync.img}"
+: "${FWGUID:=000A270021574219}"
+: "${IRAMSPILL:=0x10000}"
+NAME=${CONTAINER:-ipod-live}
+
+# Resolve the display. DISPLAY defaults to :0; XAUTHORITY is taken from the
+# single Xwayland cookie if present. Explicit-but-unreadable is treated as unset
+# since docker cannot bind-mount it.
+: "${DISPLAY:=:0}"
+if [ -z "${XAUTHORITY:-}" ] || [ ! -r "${XAUTHORITY:-}" ]; then
+  XAUTHORITY=""
+  for f in "${XAUTHORITY_DIR:-/run/user/$(id -u)}"/.mutter-Xwaylandauth.*; do
+    [ -r "$f" ] || continue
+    if [ -n "$XAUTHORITY" ]; then
+      echo "live: multiple Xwayland auth files; set XAUTHORITY explicitly" >&2
+      exit 1
+    fi
+    XAUTHORITY=$f
+  done
+fi
+if [ -z "$DISPLAY" ] || [ -z "${XAUTHORITY:-}" ] || [ ! -r "$XAUTHORITY" ]; then
+  echo "live: cannot determine X display (DISPLAY='$DISPLAY' XAUTHORITY='${XAUTHORITY:-}')" >&2
+  echo "live: set DISPLAY and XAUTHORITY, e.g. DISPLAY=:0 XAUTHORITY=\$(ls /run/user/\$(id -u)/.mutter-Xwaylandauth.*) mise run emulator:live" >&2
+  echo "live: not touching container '$NAME'" >&2
+  exit 1
+fi
+
+# Record which OSOS the window is about to run.
+OSOS=${OSOS:-assets/firmware/2.0.5/osos_decrypted.bin}
+SCRATCH=${SCRATCH:-assets/scratch}
+mkdir -p "$SCRATCH"
+md5sum "$OSOS" | tee "$SCRATCH/live.osos"
+
+if [ -n "${DRYRUN:-}" ]; then
+  echo "live: DRYRUN (DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY); would replace '$NAME'"
+  exit 0
+fi
+
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+rm -f "$SCRATCH/live.sock"
+# Host audio: PulseAudio/PipeWire-pulse socket + AUDIOLIVE (i2s -> AUD_write). AUDIO=0 disables.
+AUDIO_ARGS=""
+if [ "${AUDIO:-1}" != 0 ] && [ -S "/run/user/$(id -u)/pulse/native" ]; then
+  AUDIO_ARGS="-v /run/user/$(id -u)/pulse:/run/user/$(id -u)/pulse -e XDG_RUNTIME_DIR=/run/user/$(id -u) -e PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native -e AUDIOLIVE=1"
+fi
+docker run --rm -d --name "$NAME" --user "$(id -u):$(id -g)" -v "$PWD:$PWD" -w "$PWD" \
+  -v /tmp/.X11-unix:/tmp/.X11-unix -v "$XAUTHORITY:/tmp/xauth:ro" \
+  -e DISPLAY="$DISPLAY" -e XAUTHORITY=/tmp/xauth -e SDL_VIDEODRIVER=x11 $AUDIO_ARGS \
+  ${DISK:+-e DISK="$DISK"} ${FWGUID:+-e FWGUID="$FWGUID"} ${IRAMSPILL:+-e IRAMSPILL="$IRAMSPILL"} ipod-qemu-build \
+  env T=0 OSOS="$OSOS" tools/ipod_classic/boot205.sh -display sdl -audio driver=pa \
+  -monitor "unix:$SCRATCH/live.sock,server,nowait" -gdb tcp::1405

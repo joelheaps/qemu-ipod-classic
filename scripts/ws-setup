@@ -1,0 +1,38 @@
+#!/bin/sh
+# Run inside a new jj workspace: symlink main's untracked
+# assets/<dir>/<entry> into this workspace's assets/ (re-run when main gains entries).
+# assets/<dir>/README.md is tracked, so each <dir> is a real dir here and its other
+# entries are symlinks to main's; assets/.main marks the workspace for mise.toml assets_mount.
+set -e
+[ -n "$WS_MAIN" ] || cd "${MISE_PROJECT_ROOT:-$PWD}"
+MAIN=$(jj workspace root --name default)/assets
+[ "$MAIN" = "$PWD/assets" ] && { echo "ws-setup: this is the main checkout" >&2; exit 1; }
+[ -d "$MAIN" ] || { echo "ws-setup: no $MAIN" >&2; exit 1; }
+mkdir -p "$MAIN/scratch/runs"
+ln -sfn "$MAIN" assets/.main
+# Drop links whose target main has since moved, and the dirs they leave empty.
+find assets -mindepth 2 -maxdepth 2 -xtype l -delete
+find assets -mindepth 1 -maxdepth 1 -type d -empty -delete
+for d in "$MAIN"/*/; do
+  n=$(basename "$d")
+  mkdir -p "assets/$n"
+  for e in "$d"* "$d".[!.]*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    b=$(basename "$e")
+    [ "$b" = README.md ] || ln -sfn "$e" "assets/$n/$b"
+  done
+done
+# Seed build outputs as real copies (no symlinks: the container mounts only $PWD). Editing C here
+# means a full emulator:build (no build.ninja: ninja has absolute paths). touch: jj gives sources
+# new mtimes, so without it mise's sources/outputs check reruns the build.
+[ -n "$WS_MAIN" ] || WS_MAIN=$(jj workspace root --name default)
+if [ "$(jj --ignore-working-copy -R "$WS_MAIN" log -r @ --no-graph -T 'empty')" != true ]; then
+  echo "ws-setup: warning: $WS_MAIN has uncommitted changes; seeded binary may not match $WS_REV" >&2
+fi
+mise -C "$WS_MAIN" run emulator:build
+for f in build/qemu-system-arm build/pc-bios build/contrib/plugins/libpctrace.so; do
+  mkdir -p "$(dirname "$f")"
+  rm -rf "$f"
+  cp -rL "$WS_MAIN/$f" "$f"
+  find "$f" -exec touch {} +
+done

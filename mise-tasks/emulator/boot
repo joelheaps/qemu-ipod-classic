@@ -1,0 +1,12 @@
+#!/bin/sh
+#MISE description="Boot retailOS 2.0.5 (assets/firmware/2.0.5) headless; extra args go to QEMU; T=secs (default 20, 0 = no limit), OSOS=image"
+#MISE depends=["emulator:build"]
+#
+# boot205.sh needs QEMU + build/pc-bios, so it runs in the dev container
+# ([tasks.sh]); re-exec there. Extra args are appended to the QEMU command.
+if [ "${EMULATOR_BOOT_IN_CONTAINER:-0}" != 1 ]; then
+  exec mise run sh -- env EMULATOR_BOOT_IN_CONTAINER=1 "${MISE_TASK_FILE:-$0}" "$@"
+fi
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+exec tools/ipod_classic/boot205.sh -display none "$@"
