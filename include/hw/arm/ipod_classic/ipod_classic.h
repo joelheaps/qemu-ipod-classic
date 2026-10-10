@@ -26,6 +26,7 @@
 #include "hw/arm/ipod_classic/ipod_classic_wheel.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
 #include "hw/arm/ipod_classic/ipod_classic_sm1.h"
+#include "hw/arm/ipod_classic/ipod_classic_vdec.h"
 #include "hw/arm/ipod_classic/ipod_classic_edgeic.h"
 
 #define TYPE_IPOD_CLASSIC "iPod-Classic"
@@ -86,6 +87,13 @@
  * map and how each line of it was found.
  */
 #define DISP_MEM_BASE     0x38900000
+/*
+ * The video decoder at 0x39800000, the analogue of the SM1 audio engine. It is
+ * undocumented (absent from Rockbox's s5l87xx.h and freemyipod's model); the
+ * base is from the guest submit FUN_081b65c4. STUB today: reads/writes latch.
+ * See ipod_classic_vdec.h and docs/video-decoder.md.
+ */
+#define VDEC_MEM_BASE     0x39800000
 #define ATA_UNK_MEM_BASE  0x38A00000   /* ATA_UNKNOWN_BASE */
 #define SDCI_MEM_BASE     0x38B00000   /* SDCI_BASE, CE-ATA */
 #define AES_MEM_BASE      0x38C00000   /* AES_BASE */

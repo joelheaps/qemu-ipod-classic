@@ -966,9 +966,22 @@ static void ipod_classic_machine_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                        s5l8702_get_irq(nms, S5L8702_SM1_IRQ));
 
+    /*
+     * The video decoder at 0x39800000, the video analogue of SM1. Latch-only by
+     * default (VDECTRACE register trace); with VDEC_DECODE=1 it decodes the
+     * tapped AU with libavcodec and pulses done. The done signal goes through
+     * the edge-IC (bit 3, which the guest's handler acks at +0xc) to VIC1 line 3
+     * -- combined id 35. See ipod_classic_vdec.c and ipod_classic_edgeic.c.
+     */
+    dev = qdev_new(TYPE_IPOD_CLASSIC_VDEC);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, VDEC_MEM_BASE);
+
     edgeic = qdev_new(TYPE_IPOD_CLASSIC_EDGEIC);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(edgeic), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(edgeic), 0, EDGEIC_MEM_BASE);
+    qdev_connect_gpio_out_named(dev, SYSBUS_DEVICE_GPIO_IRQ, 0,
+                                qdev_get_gpio_in(edgeic, 3));
     sysbus_connect_irq(SYS_BUS_DEVICE(edgeic), 0,
                        s5l8702_get_irq(nms, S5L8702_VDEC_IRQ));
 
