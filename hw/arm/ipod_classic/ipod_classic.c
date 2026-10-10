@@ -985,7 +985,23 @@ static void ipod_classic_machine_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(edgeic), 0,
                        s5l8702_get_irq(nms, S5L8702_VDEC_IRQ));
 
-    /* Serial console. */
+    /*
+     * Display/scaler output frame-done at 0x39300000, VIC line 30. The guest's
+     * video engine registers handler 0x0808b66c there; it acks at +0x280 and
+     * posts the Granite engine wait event, which is what lets the AVS present
+     * path run. Modelled as a frame-done edge only, behind SDO_FRAME_IRQ
+     * (default off) because the panel frame rate is undetermined; see
+     * ipod_classic_sdo.c.
+     */
+    dev = qdev_new(TYPE_IPOD_CLASSIC_SDO);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, SDO_MEM_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                       s5l8702_get_irq(nms, S5L8702_SDO_IRQ));
+
+    /*
+     * Serial console.
+     */
     exynos4210_uart_create(UART0_MEM_BASE, 256, 0, serial_hd(0),
                            s5l8702_get_irq(nms, S5L8702_UART0_IRQ));
 

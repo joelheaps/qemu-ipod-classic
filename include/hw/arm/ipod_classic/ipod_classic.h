@@ -27,6 +27,7 @@
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
 #include "hw/arm/ipod_classic/ipod_classic_sm1.h"
 #include "hw/arm/ipod_classic/ipod_classic_vdec.h"
+#include "hw/arm/ipod_classic/ipod_classic_sdo.h"
 #include "hw/arm/ipod_classic/ipod_classic_edgeic.h"
 
 #define TYPE_IPOD_CLASSIC "iPod-Classic"
@@ -107,6 +108,7 @@
 #define EDGEIC_MEM_BASE   0x38E02000
 #define EDGEIC_MEM_SIZE   0x1000
 #define ADM_SFR_MEM_BASE  0x39000000   /* ADM_SFR_BASE, CalmADM2E audio DSP */
+#define SDO_MEM_BASE      0x39300000   /* TVOUT_SDO_BASE, display/scaler output */
 #define LCD_WIN_MEM_BASE  0x39200000   /* LCDBASE, framebuffer windows */
 #define FMC_MEM_BASE      0x39400000   /* FMC_BASE, NAND controller */
 #define DMAC1_MEM_BASE    0x39900000   /* DMA1_BASE, PL080 */
