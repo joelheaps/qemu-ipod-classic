@@ -6,7 +6,8 @@
  * pixel reconstruction to this block. It is undocumented (no Rockbox or
  * freemyipod name); the register map here
  * is from the guest submit routine FUN_081b65c4 and the context reset
- * FUN_081b6a14, decompiled with Ghidra. See docs/video-decoder.md.
+ * FUN_081b6a14, decompiled with Ghidra. See hw/arm/ipod_classic/README.md,
+ * "Video".
  *
  * DRAFT / STUB. Nothing is decoded yet: reads and writes latch into a register
  * file, and VDECTRACE=1 logs every access with addr/value/PC so the block's

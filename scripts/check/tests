@@ -1,0 +1,8 @@
+#!/bin/sh
+#MISE description="Run the fork's Python tests (pytest over tools/ipod_classic/tests); the docker end-to-end ones skip without docker, the dev image or build/qemu-img"
+#
+# Host-side via uvx. Only tools/ipod_classic is collected (never upstream QEMU's tests/). Extra args go to
+# pytest, e.g. `mise run check:tests -- -k version`.
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+exec uvx --with cryptography pytest -c /dev/null --rootdir=. -o testpaths=tools/ipod_classic/tests -o pythonpath=tools/ipod_classic -p no:cacheprovider -rs "$@"

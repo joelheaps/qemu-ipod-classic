@@ -1,0 +1,8 @@
+#!/bin/sh
+#MISE description="Run shellcheck on the fork's shell scripts (mise tasks in scripts/)"
+#
+# Fork-owned only: the rest of scripts/ is upstream QEMU. Extra args go to shellcheck.
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+grep -rlE '^#!.*\b(ba|da|k)?sh\b' scripts/build-in-docker scripts/check scripts/docker scripts/ipod |
+  xargs shellcheck "$@"

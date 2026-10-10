@@ -1,0 +1,14 @@
+#!/bin/sh
+#MISE description="Format the fork's Markdown with mdformat (GFM tables kept compact, unpadded; paragraph line breaks removed)"
+#
+# Host-side via uvx (no container; first run downloads mdformat-gfm, later cached).
+# Fork-owned docs only: formatting upstream QEMU files would drown the fork's diff.
+# Extra args are appended, e.g. `mise run check:doc-formatting -- --check` (dry run).
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+exec uvx --with mdformat-gfm mdformat --wrap no --compact-tables \
+  README.md CONTEXT.md tools/README.md \
+  assets/README.md assets/disks/README.md \
+  docs/ipod \
+  hw/arm/ipod_classic/README.md hw/arm/ipod_video/README.md \
+  "$@"

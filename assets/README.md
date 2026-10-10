@@ -1,12 +1,9 @@
-# assets/
+# Assets
 
-Untracked data; only `README.md` files are in git. Firmware is Apple's and is not redistributed:
-supply your own dumps (see the top-level README) and pass paths to the tools.
+Assets contains various data blobs to help with tasks in this repo. Everything here except the READMEs is gitignored, so it is the suggested place for Apple files (`.ipsw`, `osos_decrypted.bin`) and disks built from them; no script depends on its layout.
 
-| Folder | Holds | Regenerable |
-|---|---|---|
-| `disks/` | QEMU disk images (iPod HDD layouts with a music DB) | yes (external disk-image tooling, not in this tree) |
-| `scratch/` | throwaway: `$SCRATCH` (default write target of tools), run dirs, screenshots | n/a |
-
-Firmware inputs go under `assets/firmware/...`. `build/` is not tracked: rebuild with
-`mise run emulator:build`.
+| Directory | Suggested contents |
+| -- | -- |
+| `firmware/` | `.ipsw`, `Firmware-XX` payloads, `osos_decrypted.bin` |
+| `disks/` | Disk images, e.g. from `mise run ipod:make-disk` (`assets/disks/README.md`) |
+| `test/` | `iPod_38.2.0.5.ipsw` for the real-firmware test in `tools/ipod/tests/test_make_disk.py` (or set `IPOD_TEST_IPSW`) |

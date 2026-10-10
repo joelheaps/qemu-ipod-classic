@@ -27,17 +27,20 @@ GTAGS
 
 # iPod classic 6G work: firmware images, extracted blobs, Rockbox reference
 # sources and test binaries. Big and not ours to redistribute.
-# Only the READMEs under assets/ are tracked. Workspaces symlink main's entries into
-# their own assets/<dir>/ (mise run ws:link-assets), which these rules ignore.
+# Only the top-level assets/README.md and the disk image it documents are tracked.
+# Workspaces symlink main's entries into their own assets/<dir>/ (mise run ws:link-assets),
+# which these rules ignore.
 /assets/*
 !/assets/README.md
 !/assets/*/
 /assets/*/*
-!/assets/*/README.md
 hilo-x/
 
 # Per-run emulator outputs (repro.py, rolo-rehearse OUT=)
 /i2c-runs/
+# Host-specific mise settings (local bind mounts); see mise.toml.
+/mise.local.toml
+/.mise.local.toml
 # Build/run logs redirected at the repo root (keep them out of git)
 /*.log
 /subprojects/.wraplock

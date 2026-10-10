@@ -1,0 +1,10 @@
+# Build image: compiles QEMU (configure/ninja/make). Runtime and guest tooling live
+# in Dockerfile.dev (the dev image); this one is only ever run by `build-in-docker`.
+FROM ubuntu:26.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ninja-build meson pkg-config python3 python3-venv \
+    libglib2.0-dev libpixman-1-dev libsdl2-dev libssl-dev libpulse-dev \
+    zlib1g-dev libavcodec-dev libavutil-dev libswresample-dev \
+    git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*

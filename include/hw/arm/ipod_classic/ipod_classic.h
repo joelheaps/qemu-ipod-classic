@@ -3,7 +3,7 @@
  *
  * The memory map below is derived from Rockbox's register header
  * firmware/export/s5l87xx.h, resolved for CONFIG_CPU == S5L8702. See
- * hw/arm/ipod_classic/README.md for the per-block notes and the 8700/8701-only bases.
+ * hw/arm/ipod_classic/README.md for the per-block notes.
  */
 
 #ifndef HW_ARM_IPOD_CLASSIC_H
@@ -65,7 +65,7 @@
 #define BOOTROM_MEM_SIZE  0x00020000
 
 /*
- * The peripheral window. The retailOS maps all 768 MB of it as one uncached
+ * The peripheral window. The retailOS maps all 128 MB of it as one uncached
  * identity section in its page table (0x22004534), so every address in here
  * has to answer: an unmapped one is a data abort, not a zero read.
  */
@@ -79,9 +79,7 @@
 #define LCD_MEM_BASE      0x38300000   /* LCD_BASE */
 #define USBOTG_MEM_BASE   0x38400000   /* OTGBASE, Synopsys DWC */
 #define SM1_MEM_BASE      0x38500000   /* SM1_BASE, clock divider */
-#define USB_HC_MEM_BASE   0x38600000   /* USB_HC_BASE */
 #define ATA_MEM_BASE      0x38700000   /* ATA_BASE, the hard disk */
-#define USB_FC_MEM_BASE   0x38800000   /* USB_FC_BASE */
 /*
  * Not in s5l87xx.h and not in freemyipod's model: the display pipe. Named from
  * Apple's own code -- see ipod_classic_disp.h, which carries the whole register
@@ -92,7 +90,7 @@
  * The video decoder at 0x39800000, the analogue of the SM1 audio engine. It is
  * undocumented (absent from Rockbox's s5l87xx.h and freemyipod's model); the
  * base is from the guest submit FUN_081b65c4. STUB today: reads/writes latch.
- * See ipod_classic_vdec.h and docs/video-decoder.md.
+ * See ipod_classic_vdec.h and hw/arm/ipod_classic/README.md, "Video".
  */
 #define VDEC_MEM_BASE     0x39800000
 #define ATA_UNK_MEM_BASE  0x38A00000   /* ATA_UNKNOWN_BASE */
@@ -110,10 +108,8 @@
 #define ADM_SFR_MEM_BASE  0x39000000   /* ADM_SFR_BASE, CalmADM2E audio DSP */
 #define SDO_MEM_BASE      0x39300000   /* TVOUT_SDO_BASE, display/scaler output */
 #define LCD_WIN_MEM_BASE  0x39200000   /* LCDBASE, framebuffer windows */
-#define FMC_MEM_BASE      0x39400000   /* FMC_BASE, NAND controller */
 #define DMAC1_MEM_BASE    0x39900000   /* DMA1_BASE, PL080 */
 #define EIC_MEM_BASE      0x39A00000   /* EIC_BASE / SYSALV_BASE */
-#define INT_MEM_BASE      0x39C00000   /* INT_BASE, legacy interrupt ctrl */
 #define ECC_MEM_BASE      0x39E00000   /* ECC_BASE */
 #define WHEEL_MEM_BASE    0x3C200000   /* WHEEL_BASE, click wheel */
 #define USBPHYS_MEM_BASE  0x3C400000   /* USB_PHY_BASE */
@@ -124,11 +120,8 @@
 #define I2S_MEM_BASE      0x3CA00000   /* I2S_BASE */
 #define SPDIF_MEM_BASE    0x3CB00000   /* SPD_BASE */
 #define UART0_MEM_BASE    0x3CC00000   /* UARTC_BASE_ADDR */
-#define SPI0_MEM_BASE     0x3CD00000   /* SPI_BASE */
-#define ADC_MEM_BASE      0x3CE00000   /* ADC_BASE */
 #define GPIO_MEM_BASE     0x3CF00000   /* GPIO_BASE */
 #define CHIPID_MEM_BASE   0x3D100000   /* CHIPID_BASE */
-#define RTC_MEM_BASE      0x3D200000   /* RTC_BASE, also SPIBASE(2) */
 #define ADM_MEM_BASE      0x3F000000   /* ADM_BASE */
 
 /* IRQ numbers, from the IRQ_* macros in s5l87xx.h. */

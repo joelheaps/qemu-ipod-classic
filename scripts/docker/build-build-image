@@ -1,0 +1,15 @@
+#!/bin/sh
+#MISE description="Build the QEMU build image qemu-ipod-build (configure/ninja/make)"
+#
+# No-op when the image already matches the Dockerfile (see build-dev-image).
+set -eu
+cd "${MISE_PROJECT_ROOT:-$PWD}"
+img=qemu-ipod-build
+df=docker/Dockerfile.build
+hash=$(sha256sum "$df" | cut -d' ' -f1)
+have=$(docker image inspect -f '{{index .Config.Labels "mise.dockerfile"}}' "$img" 2>/dev/null || true)
+if [ "$have" = "$hash" ]; then
+  echo "$img is up to date ($df unchanged)"
+  exit 0
+fi
+docker build --label "mise.dockerfile=$hash" -t "$img" -f "$df" docker

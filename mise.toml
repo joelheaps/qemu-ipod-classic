@@ -1,8 +1,8 @@
 # Builds and target tooling run in Docker; host-side helper scripts use mise's python/uv.
-# Extra args are appended, e.g. `mise run sh -- arm-none-eabi-objdump --version`.
 
 [tools]
 python = "3.14"
+shellcheck = "latest"
 uv = "latest"
 
 [env]
@@ -12,26 +12,15 @@ SCRATCH = "{{config_root}}/assets/scratch"
 [settings]
 env_shell_expand = false
 
-[vars]
-# In a workspace assets/.main points at main's assets/ (symlinked entries); mount it at its
-# real path so the links resolve inside the container. Empty in the main checkout.
-assets_mount = "$( [ -L assets/.main ] && echo -v $(readlink -f assets/.main):$(readlink -f assets/.main) )"
-# Optional tmpfs scratch for big traces/dumps: mkdir /dev/shm/qemu-ipod to enable (mounted at the same path).
-ram_mount = "$( [ -d /dev/shm/qemu-ipod ] && echo -v /dev/shm/qemu-ipod:/dev/shm/qemu-ipod )"
-# Workspaces also mount main's checkout read-only (seeded build/ links and tools resolve there). Empty in main.
-main_mount = "$( [ -L assets/.main ] && echo -v $(dirname $(readlink -f assets/.main)):$(dirname $(readlink -f assets/.main)):ro )"
-# -e NAME forwards the host var only when it is set. Covers emulator:boot/rehearse:rolo knobs.
-dev = "docker run --rm -i --user $(id -u):$(id -g) -v $PWD:$PWD {{vars.assets_mount}} {{vars.main_mount}} {{vars.ram_mount}} -w $PWD -e SCRATCH -e DISK -e DUMP -e GDB -e FWGUID -e OSOS -e IRAMNOISE -e IRAMSPILL -e BOOTINFO -e LCDTYPE -e PMUCHARGER -e PMUHOLD -e PMUOOCSTAT -e GPIO_MEDIA -e LCD_DISPON -e T -e QS -e PORT -e OUT -e LOCK -e ELF -e IPOD -e WHEELTRACE -e PMUTRACE -e DISPTRACE -e DISPLOG -e QEMU -e REF -e TAG -e SNAPSHOT -e MON -e PLUGIN ipod-qemu-build"
+[tasks."docker:build-images"]
+description = "Build both Docker images (qemu-ipod-dev, qemu-ipod-build)"
+depends = ["docker:build-dev-image", "docker:build-build-image"]
 
-[tasks.sh]
-# /tmp is NOT bind-mounted from the host (only $PWD is): scratch files written in
-# here are invisible on the host and host /tmp is invisible to the container. Keep
-# scratch under $PWD so both sides can see it.
-description = "Run a command in the dev container (gdb-multiarch, arm-none-eabi-*, r2, mtools, ...)"
-run = "{{vars.dev}}"
-
-# Task definitions live in mise-tasks/ as file tasks (nested directories are groups, e.g.
-# mise-tasks/emulator/build -> emulator:build). [tasks.sh] stays here because it is
-# the dev-container entry point those file tasks re-exec. Run `mise tasks` for the full list.
+# Task definitions live in scripts/ as file tasks (nested directories are groups, e.g.
+# scripts/ipod/run -> ipod:run). Run `mise tasks` for the full list.
 [task_config]
-includes = ["mise-tasks"]
+includes = ["scripts"]
+
+[tasks.check]
+description = "Run every check:* task"
+depends = ["check:*"]

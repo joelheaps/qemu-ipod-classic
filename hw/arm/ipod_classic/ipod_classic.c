@@ -414,7 +414,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
      * because the two things we want to boot land in different places: a
      * Rockbox bootloader runs from IRAM1 at 0x22020800, while the osos image
      * of a retail firmware loads at 0x08000000 (addr in the firmware
-     * directory, see docs/classic6g-firmware.md). A raw binary has no such
+     * directory, see docs/ipod/classic6g-firmware.md). A raw binary has no such
      * information, so it goes to SDRAM.
      */
     if (machine->kernel_filename) {
@@ -520,26 +520,19 @@ ipod_classic_unimplemented[] = {
     /* DMAC0 and DMAC1 are real PL080s now; see the machine init. */
     { "s5l8702.usb-otg",  USBOTG_MEM_BASE,   0x100000 },
     /* s5l8702.sm1 (0x38500000) is a real (minimal) device now; see below. */
-    { "s5l8702.usb-hc",   USB_HC_MEM_BASE,   0x100000 },
-    { "s5l8702.usb-fc",   USB_FC_MEM_BASE,   0x100000 },
     { "s5l8702.ata-unk",  ATA_UNK_MEM_BASE,  0x100000 },
     { "s5l8702.sdci",     SDCI_MEM_BASE,     0x100000 },
     { "s5l8702.aes",      AES_MEM_BASE,      0x100000 },
     { "s5l8702.adm-sfr",  ADM_SFR_MEM_BASE,  0x100000 },
     { "s5l8702.lcd-win",  LCD_WIN_MEM_BASE,  0x100000 },
-    { "s5l8702.fmc",      FMC_MEM_BASE,      0x100000 },
     { "s5l8702.eic",      EIC_MEM_BASE,      0x100000 },
-    { "s5l8702.int",      INT_MEM_BASE,      0x100000 },
     { "s5l8702.ecc",      ECC_MEM_BASE,      0x100000 },
     /* The click wheel is a real device now; see the machine init. */
     { "s5l8702.usb-phy",  USBPHYS_MEM_BASE,  0x100000 },
     { "s5l8702.wdt",      WDT_MEM_BASE,      0x100000 },
     /* s5l8702.i2s is a real device now; see the machine init. */
     { "s5l8702.spdif",    SPDIF_MEM_BASE,    0x100000 },
-    { "s5l8702.spi0",     SPI0_MEM_BASE,     0x100000 },
-    { "s5l8702.adc",      ADC_MEM_BASE,      0x100000 },
     { "s5l8702.chipid",   CHIPID_MEM_BASE,   0x100000 },
-    { "s5l8702.rtc",      RTC_MEM_BASE,      0x100000 },
     { "s5l8702.adm",      ADM_MEM_BASE,      0x100000 },
 };
 
@@ -1084,7 +1077,7 @@ static void ipod_classic_machine_init(MachineState *machine)
 
     /*
      * A floor under the whole peripheral window. The retailOS maps
-     * 0x38000000..0x3fffffff as one 768 MB uncached identity range in the page
+     * 0x38000000..0x3fffffff as one 128 MB uncached identity range in the page
      * table it builds at 0x22004534, so a register we have not listed above is
      * not a harmless zero read: it is a data abort, taken through a handler
      * that lives in DRAM and will cascade. Priority -2000 puts it below the
