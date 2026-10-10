@@ -19,11 +19,25 @@ GTAGS
 *.depend_raw
 *.swp
 *.patch
+# ...but the ipod6g bootloader rebuild patch is a deliverable, not scratch.
+!tools/ipod_classic/rockbox/*.patch
 *.gcov
 
 *.DS_Store
 
 # iPod classic 6G work: firmware images, extracted blobs, Rockbox reference
 # sources and test binaries. Big and not ours to redistribute.
-/assets/
+# Only the READMEs under assets/ are tracked. Workspaces symlink main's entries into
+# their own assets/<dir>/ (mise run ws:link-assets), which these rules ignore.
+/assets/*
+!/assets/README.md
+!/assets/*/
+/assets/*/*
+!/assets/*/README.md
 hilo-x/
+
+# Per-run emulator outputs (repro.py, rolo-rehearse OUT=)
+/i2c-runs/
+# Build/run logs redirected at the repo root (keep them out of git)
+/*.log
+/subprojects/.wraplock
