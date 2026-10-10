@@ -13,6 +13,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
@@ -22,6 +23,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "sysemu/blockdev.h"
+#include "migration/vmstate.h"
 #include "hw/arm/ipod_classic/ipod_classic_ata.h"
 
 /* Which IDE core port a device-register offset corresponds to. */
@@ -60,9 +62,14 @@ static void ipod_classic_ata_set_irq(void *opaque, int n, int level)
 {
     IPodClassicATAState *s = opaque;
 
+    if (ata_trace()) {
+        fprintf(stderr, "ATA IRQ level=%d mask=0x%x\n", level,
+                s->reg[S5L8702_ATA_IRQMASK / 4]);
+    }
     s->intrq = level;
     if (level) {
-        s->reg[S5L8702_ATA_IRQSTAT / 4] |= S5L8702_ATA_INTRQ_BIT;
+        s->reg[S5L8702_ATA_IRQSTAT / 4] |= S5L8702_ATA_INTRQ_BIT |
+                                           S5L8702_ATA_INTRQ_PIO_BIT;
     }
     ipod_classic_ata_update_irq(s);
 }
@@ -449,6 +456,59 @@ static const MemoryRegionOps ipod_classic_ata_ops = {
     .valid.max_access_size = 4,
 };
 
+/*
+ * The one piece of this device that cannot be described by a VMStateField is
+ * dma_cb, the IDE core callback latched by start_dma() when the guest writes
+ * the ATA command and fired when it later writes the go bit. It is a host
+ * function pointer with no stable representation. The window in which it is
+ * non-NULL is the handful of instructions between those two writes; a snapshot
+ * taken there has no honest way to resume, so pre_save refuses it instead of
+ * silently restoring a device that would stall on the go bit. Stable UI states
+ * (the acceptance snapshot) always have it NULL: set_inactive()/reset clear it
+ * after every transfer.
+ */
+static int ipod_classic_ata_pre_save(void *opaque)
+{
+    IPodClassicATAState *s = opaque;
+
+    if (s->dma_cb) {
+        error_report("%s: ATA DMA callback latched (command written, go bit "
+                     "not yet); this transfer cannot be snapshotted",
+                     TYPE_IPOD_CLASSIC_ATA);
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static int ipod_classic_ata_post_load(void *opaque, int version_id)
+{
+    IPodClassicATAState *s = opaque;
+
+    /* The IRQ line is a sysbus output and is not migrated; re-derive it. */
+    ipod_classic_ata_update_irq(s);
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_classic_ata = {
+    .name = TYPE_IPOD_CLASSIC_ATA,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = ipod_classic_ata_pre_save,
+    .post_load = ipod_classic_ata_post_load,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(reg, IPodClassicATAState,
+                             S5L8702_ATA_MEM_SIZE / 4),
+        VMSTATE_UINT32(rdata, IPodClassicATAState),
+        VMSTATE_BOOL(rdata_valid, IPodClassicATAState),
+        VMSTATE_BOOL(intrq, IPodClassicATAState),
+        VMSTATE_UINT32(dma_cur, IPodClassicATAState),
+        VMSTATE_UINT32(dma_left, IPodClassicATAState),
+        VMSTATE_IDE_BUS(bus, IPodClassicATAState),
+        VMSTATE_IDE_DRIVES(bus.ifs, IPodClassicATAState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void ipod_classic_ata_reset(DeviceState *dev)
 {
     IPodClassicATAState *s = IPOD_CLASSIC_ATA(dev);
@@ -508,7 +568,7 @@ static void ipod_classic_ata_class_init(ObjectClass *klass, void *data)
     dc->desc = "S5L8702 ATA controller";
     dc->realize = ipod_classic_ata_realize;
     dc->reset = ipod_classic_ata_reset;
-    /* Not migratable: the latched read result is not saved. */
+    dc->vmsd = &vmstate_ipod_classic_ata;
     dc->user_creatable = false;
 }
 

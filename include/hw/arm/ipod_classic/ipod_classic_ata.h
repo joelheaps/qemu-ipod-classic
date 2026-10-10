@@ -124,6 +124,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicATAState, IPOD_CLASSIC_ATA)
  */
 #define S5L8702_ATA_INTRQ_BIT    (1u << 0)
 
+/*
+ * INFERRED (retailOS 2.0.5): that firmware's PIO command path (wait routine at
+ * 0x083628c0 in the runtime image: ack ATA_IRQ, issue, ATA_IRQ_MASK = 4, then
+ * sleep on a semaphore with a 5 s timeout) unmasks ONLY bit 2, so a device
+ * interrupt that sets bit 0 alone is never seen and IDENTIFY/SET FEATURES time
+ * out. The DMA path keeps using ATA_IRQ_MASK = BIT(0). We raise both bits on
+ * the one interrupt line we have; whichever the driver unmasks wakes it.
+ */
+#define S5L8702_ATA_INTRQ_PIO_BIT (1u << 2)
+
 struct IPodClassicATAState {
     SysBusDevice parent_obj;
 
