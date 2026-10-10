@@ -128,10 +128,21 @@ struct IPodClassicI2CState {
     uint32_t iicunk18;
     uint32_t iicstat2;
 
-    /* IICCON bit 4 as the hardware sees it: a byte has finished, go is armed. */
+    /*
+     * IICCON bit 4 as the hardware sees it: a byte has finished and has not
+     * been serviced yet. This is a LEVEL, not an edge: it is cleared only when
+     * the driver consumes the byte -- starts the next one (GO with a fresh
+     * IICDS), reads a received byte out of IICDS, or stops. The byte-done
+     * interrupt is held on it, so the interrupt-ack helper's IICSTAT2 write
+     * cannot swallow a byte that completed while the previous byte's ISR was
+     * still running. See the long note in ipod_classic_i2c.c.
+     */
     bool byte_done;
     /* Set between IICSTAT = 0xf0/0xb0 and the address byte completing. */
     bool in_address;
+    /* IICDS holds a byte not yet put on the wire / not yet read back. */
+    bool tx_valid;
+    bool rx_valid;
 };
 
 #endif
