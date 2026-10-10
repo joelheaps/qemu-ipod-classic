@@ -53,8 +53,21 @@
  *                               sendex=0x22001060:1:0x6:ex6  (once REG is known)
  *                               fires only on the ~52 real sends to exchange 6,
  *                               so it never perturbs the guest into regime B.
- *   regcap=N                    max logged register lines per regpc/sendex PC
- *                               (default 400; counts keep rising past the cap).
+ *                               regpc/sendex need ADDR at a TB head; when the
+ *                               wanted value is a field, prefer memr= (below),
+ *                               which reads memory at REG+OFF regardless of which
+ *                               register actually held the value.
+ *   memr=0xADDR:REG:OFF:LEN:LABEL  at ADDR read core reg REG, then LEN bytes
+ *                               (decimal, max 256, clamped -- a larger LEN warns)
+ *                               of guest memory at REG+OFF (OFF hex, may be
+ *                               negative); logged as hex after the regpc line
+ *                               (e.g. memr=0x...:0:0x1c:4:blit). A read that
+ *                               crosses into unmapped memory logs <unmapped>.
+ *   regcap=N                    max logged register lines per regpc/sendex/memr
+ *                               PC (default 400; counts keep rising past the cap).
+ *   NOTE regpc/sendex/memr may repeat the SAME PC: every probe is installed (each
+ *   is its own callback), so two memr= on one PC both fire. (Until 2026-10 the
+ *   second was silently dropped; that trap is gone.)
  *   rangecap=N                  max range= lines per trigger window (default 500).
  *   memcap=N                    max logged memw= store lines (default 400); the
  *                               store count keeps rising past it. `memw=` takes
@@ -68,9 +81,11 @@
  *   CORRECTNESS: 8.2 discards callback cb-flags and emits the callback helper
  *   TCG_CALL_NO_RWG, so the guest register file is only authoritative at a TB
  *   boundary. This plugin therefore only reads registers when ADDR is the FIRST
- *   instruction of its translation block (a branch/call target -- which every
- *   RTXC primitive entry is). If ADDR is ever seen mid-block the plugin counts
- *   the hit but refuses the (unreliable) register read and warns once.
+ *   instruction of its translation block. A branch target is NOT necessarily a
+ *   TB head: the same PC reached by fall-through from the previous insn is
+ *   mid-TB, so some hits can be unreadable. regpc/sendex/memr all count such
+ *   mid-TB hits, refuse the (unreliable) read, and warn once per PC (also shown
+ *   as [mid-TB skipped=N] in the summary); hits/matches are then undercounts.
  *
  * License: GNU GPL, version 2 or later (see COPYING).
  */
@@ -188,7 +203,12 @@ typedef struct {
     guint64 logged;     /* lines actually emitted (<= regpc_cap) */
     guint64 mid_hits;   /* times seen mid-TB (regs unreliable, not read) */
     bool mid_warned;    /* one-shot warning emitted for mid-TB sighting */
+    int mem_reg;        /* memr: base gdb reg, or -1 for regpc/sendex */
+    int64_t mem_off;    /* memr: byte offset added to the base register */
+    uint32_t mem_len;   /* memr: bytes to read (<= MEMR_MAX) */
 } RegPC;
+#define MEMR_MAX 256
+static GByteArray *mem_buf;        /* scratch for qemu_plugin_read_memory_vaddr */
 static GArray *regpcs;              /* array of RegPC */
 static guint64 regpc_cap = 400;    /* max logged reg lines per watched PC */
 static GByteArray *reg_buf;        /* scratch for qemu_plugin_read_register */
@@ -360,18 +380,32 @@ static void vcpu_mem_at_pc(unsigned int cpu_index, qemu_plugin_meminfo_t info,
     fflush(out);
 }
 
-static RegPC *find_regpc(uint64_t pc)
+static void vcpu_regpc_exec(unsigned int cpu_index, void *udata);
+static void vcpu_regpc_mid(unsigned int cpu_index, void *udata);
+
+/* Install a register-read callback for every probe at va. Multiple probes may
+ * share a PC (e.g. two memr= fields of the same object); each gets its own
+ * callback, so no probe is silently dropped. At a TB head (is_head) env is
+ * authoritative and the read runs; mid-TB it is refused and warned. */
+static void register_regpc_probes(struct qemu_plugin_insn *insn, uint64_t va,
+                                  bool is_head)
 {
     if (!regpcs) {
-        return NULL;
+        return;
     }
     for (guint i = 0; i < regpcs->len; i++) {
         RegPC *rp = &g_array_index(regpcs, RegPC, i);
-        if (rp->pc == pc) {
-            return rp;
+        if (rp->pc != va) {
+            continue;
+        }
+        if (is_head) {
+            qemu_plugin_register_vcpu_insn_exec_cb(
+                insn, vcpu_regpc_exec, QEMU_PLUGIN_CB_R_REGS, rp);
+        } else {
+            qemu_plugin_register_vcpu_insn_exec_cb(
+                insn, vcpu_regpc_mid, QEMU_PLUGIN_CB_NO_REGS, rp);
         }
     }
-    return NULL;
 }
 
 /* Insn-exec callback on a TB-head PC: read GPRs (env is authoritative here). */
@@ -414,9 +448,28 @@ static void vcpu_regpc_exec(unsigned int cpu_index, void *udata)
             " r2=0x%08" PRIx32 " r3=0x%08" PRIx32 " sp=0x%08" PRIx32
             " r4=0x%08" PRIx32 " r5=0x%08" PRIx32 " r6=0x%08" PRIx32
             " r7=0x%08" PRIx32
-            "  (match#%" PRIu64 " hit#%" PRIu64 ")\n",
+            "  (match#%" PRIu64 " hit#%" PRIu64 ")",
             now - t0, cpu_index, rp->label, rp->pc, lr, r0, r1, r2, r3, sp,
             r4, r5, r6, r7, rp->matches, rp->hits);
+    if (rp->mem_len) {
+        uint32_t base;
+        uint64_t va;
+        if (!read_reg32(rp->mem_reg, &base)) {
+            fprintf(out, "  mem=<reg read failed>");
+        } else {
+            va = (uint32_t)(base + rp->mem_off);
+            g_byte_array_set_size(mem_buf, 0);
+            if (qemu_plugin_read_memory_vaddr(va, mem_buf, rp->mem_len)) {
+                fprintf(out, "  mem[0x%08" PRIx64 "]=", va);
+                for (guint i = 0; i < mem_buf->len; i++) {
+                    fprintf(out, "%02x", mem_buf->data[i]);
+                }
+            } else {
+                fprintf(out, "  mem[0x%08" PRIx64 "]=<unmapped>", va);
+            }
+        }
+    }
+    fputc('\n', out);
     fflush(out);
 }
 
@@ -466,17 +519,9 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
                 insn, vcpu_pc_exec, QEMU_PLUGIN_CB_NO_REGS, w);
         }
         /* Register read: only trustworthy at a TB head (i == 0). Elsewhere the
-         * same PC is registered on a count-and-warn callback that never reads. */
-        RegPC *rp = find_regpc(va);
-        if (rp) {
-            if (i == 0) {
-                qemu_plugin_register_vcpu_insn_exec_cb(
-                    insn, vcpu_regpc_exec, QEMU_PLUGIN_CB_R_REGS, rp);
-            } else {
-                qemu_plugin_register_vcpu_insn_exec_cb(
-                    insn, vcpu_regpc_mid, QEMU_PLUGIN_CB_NO_REGS, rp);
-            }
-        }
+         * same PC is registered on a count-and-warn callback that never reads.
+         * Every probe at this PC is installed (multi-probe safe). */
+        register_regpc_probes(insn, va, i == 0);
         /* Range trace only cares about the TB's first instruction. */
         if (i == 0 && range_hi && va >= range_lo && va < range_hi) {
             RangePC *r = g_hash_table_lookup(range_tbl, &va);
@@ -557,7 +602,7 @@ static void plugin_exit(qemu_plugin_id_t id, void *p)
 /* parse "0xADDR:LABEL" or "0xADDR" */
 static bool parse_pc_arg(const char *s, uint64_t *addr, char **label)
 {
-    char *colon = strchr(s, ':');
+    const char *colon = strchr(s, ':');
     char *end = NULL;
     *addr = g_ascii_strtoull(s, &end, 16);
     if (end == s) {
@@ -622,8 +667,35 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                 if (!regpcs) {
                     regpcs = g_array_new(false, false, sizeof(RegPC));
                 }
-                RegPC rp = { a, l, -1, 0, 0, 0, 0, 0, false };
+                RegPC rp = { a, l, -1, 0, 0, 0, 0, 0, false, -1, 0, 0 };
                 g_array_append_val(regpcs, rp);
+            }
+        } else if (!g_strcmp0(kv[0], "memr") && kv[1]) {
+            /* memr=0xADDR:REG:OFF:LEN:LABEL : at ADDR read LEN bytes at REG+OFF */
+            g_auto(GStrv) f = g_strsplit(kv[1], ":", 5);
+            if (f[0] && f[1] && f[2] && f[3]) {
+                uint32_t len = g_ascii_strtoull(f[3], NULL, 10);
+                RegPC rp = { g_ascii_strtoull(f[0], NULL, 16), NULL, -1, 0,
+                             0, 0, 0, 0, false,
+                             (int)g_ascii_strtoull(f[1], NULL, 10),
+                             g_ascii_strtoll(f[2], NULL, 16),
+                             MIN(len, MEMR_MAX) };
+                rp.label = f[4] ? g_strdup(f[4]) : g_strdup_printf("memr");
+                if (len == 0) {
+                    fprintf(stderr, "pctrace: memr=%s LEN=0 reads nothing\n",
+                            kv[1]);
+                } else if (len > MEMR_MAX) {
+                    fprintf(stderr, "pctrace: WARNING memr=%s LEN=%" PRIu32
+                            " > MEMR_MAX=%d, clamped to %d bytes\n",
+                            kv[1], len, MEMR_MAX, MEMR_MAX);
+                }
+                if (!regpcs) {
+                    regpcs = g_array_new(false, false, sizeof(RegPC));
+                }
+                g_array_append_val(regpcs, rp);
+            } else {
+                fprintf(stderr, "pctrace: bad memr=%s (want "
+                        "ADDR:REG:OFF:LEN[:LABEL])\n", kv[1]);
             }
         } else if (!g_strcmp0(kv[0], "sendex") && kv[1]) {
             /* sendex=0xADDR:REG:WANT[:LABEL] : log only when gdb reg REG==WANT */
@@ -637,7 +709,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                 if (!regpcs) {
                     regpcs = g_array_new(false, false, sizeof(RegPC));
                 }
-                RegPC rp = { a, l, reg, want, 0, 0, 0, 0, false };
+                RegPC rp = { a, l, reg, want, 0, 0, 0, 0, false, -1, 0, 0 };
                 g_array_append_val(regpcs, rp);
             }
         } else if (!g_strcmp0(kv[0], "memwpc") && kv[1]) {
@@ -663,6 +735,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     range_tbl = g_hash_table_new(g_int64_hash, g_int64_equal);
     memw_pcs = g_hash_table_new(g_direct_hash, g_direct_equal);
     reg_buf = g_byte_array_new();
+    mem_buf = g_byte_array_new();
 
     watch = g_array_new(false, false, sizeof(WatchPC));
 
