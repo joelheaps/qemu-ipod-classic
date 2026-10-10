@@ -37,6 +37,8 @@
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
 #include "audio/audio.h"
+#include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
 
 /* ------------------------------------------------------------- tracing */
@@ -264,7 +266,13 @@ static bool i2s_pace_on(void)
 {
     if (audiopace < 0) {
         const char *e = getenv("AUDIOPACE");
-        audiopace = (e && *e && *e != '0') ? 1 : 0;
+        /* ON by default: the paced drain is what clocks the I2S transmitter in
+         * real time. MEASURED, without it the DMA never moves, tx_samples stays
+         * at 0, the SM1 stream position never advances and the retailOS audio
+         * path never leaves its stopped state (wiki/19 s11.119; reproduced
+         * 2026-10-07 with the full SM1 combo). AUDIOPACE=0 restores the
+         * un-paced baseline. */
+        audiopace = (e && *e && *e == '0') ? 0 : 1;
     }
     return audiopace == 1;
 }
@@ -393,7 +401,10 @@ static void i2s_live_open(uint32_t rate)
         return;
     }
     if (!i2s_live.registered) {
-        if (!AUD_register_card("s5l8702.i2s", &i2s_live.card, NULL)) {
+        Error *err = NULL;
+        if (!AUD_register_card("s5l8702.i2s", &i2s_live.card, &err)) {
+            error_report_err(err);
+            fprintf(stderr, "AUDIOLIVE: no audio backend (use -audio driver=pa)\n");
             return;
         }
         i2s_live.registered = true;
@@ -404,6 +415,8 @@ static void i2s_live_open(uint32_t rate)
     if (i2s_live.voice) {
         i2s_live.rate = rate;
     }
+    fprintf(stderr, "AUDIOLIVE: voice %s at %u Hz\n",
+            i2s_live.voice ? "open" : "FAILED to open", rate);
 }
 
 /* Append the low `size` bytes of a FIFO write to the ring, same bytes as the
@@ -450,6 +463,7 @@ static void i2s_live_sample(IPodClassicI2SState *s, uint64_t value, unsigned siz
         }
         i2s_live.primed = true;
         AUD_set_active_out(i2s_live.voice, 1);
+        fprintf(stderr, "AUDIOLIVE: primed, output active\n");
     }
 }
 
@@ -689,10 +703,27 @@ static void ipod_classic_i2s_realize(DeviceState *dev, Error **errp)
     i2s_live_open(I2S_LIVE_DEFAULT_RATE);
 }
 
+static int ipod_classic_i2s_post_load(void *opaque, int version_id)
+{
+    IPodClassicI2SState *s = opaque;
+
+    /*
+     * The drain timer is migrated as a timer (VMSTATE_TIMER_PTR re-arms it at
+     * its saved absolute virtual expiry), but re-arm defensively if the stream
+     * was running and the timer somehow is not pending: a transmitter with no
+     * drain tick never advances the DMA and audio dies silently.
+     */
+    if (s->tx_running && s->drain_timer && !timer_pending(s->drain_timer)) {
+        i2s_pace_arm(s);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_ipod_classic_i2s = {
     .name = TYPE_IPOD_CLASSIC_I2S,
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = ipod_classic_i2s_post_load,
     .fields = (VMStateField[]) {
         VMSTATE_UINT32(clkcon, IPodClassicI2SState),
         VMSTATE_UINT32(txcon, IPodClassicI2SState),
@@ -702,6 +733,9 @@ static const VMStateDescription vmstate_ipod_classic_i2s = {
         VMSTATE_UINT32(rxdb, IPodClassicI2SState),
         VMSTATE_UINT32(clkdiv, IPodClassicI2SState),
         VMSTATE_BOOL(tx_running, IPodClassicI2SState),
+        VMSTATE_INT64(next_tick_ns, IPodClassicI2SState),
+        VMSTATE_UINT64(tx_samples, IPodClassicI2SState),
+        VMSTATE_TIMER_PTR(drain_timer, IPodClassicI2SState),
         VMSTATE_END_OF_LIST()
     },
 };
