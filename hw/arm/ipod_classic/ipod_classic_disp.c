@@ -53,6 +53,18 @@ static bool disp_trace_on(void)
     return disptrace == 1;
 }
 
+/* DISPLOG=1 prints each source-address change (default off: it spams logs). */
+static bool disp_log_on(void)
+{
+    static int displog = -1;
+
+    if (displog < 0) {
+        const char *e = getenv("DISPLOG");
+        displog = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return displog == 1;
+}
+
 /*
  * The last PC the CPU synchronised. Under TCG that is the head of the running
  * translation block, not the address of the store -- io_prepare() does not call
@@ -161,27 +173,25 @@ static void ipod_classic_disp_write(void *opaque, hwaddr offset,
      * The one event worth shouting about: a source address, i.e. the block
      * being told where to read pixels from. A diskless boot writes zero of
      * these and draws nothing; a boot with a disk writes one per layer per
-     * frame update, so this cannot be printed every time -- stderr is the
-     * channel the firmware itself talks on (lesson 1 of wiki/09).
-     *
-     * So: announce the FIRST one unconditionally, because that is the event the
-     * whole display investigation waited for, and after that say nothing unless
-     * DISPTRACE=1 is set. The running total is printed at exit and it counts
-     * every write, not every change -- an earlier version compared against the
-     * last value seen and so counted transitions, which undercounts any layer
-     * that is re-armed with the same address (wiki/11 §8, "a log that only
-     * announces the first occurrence cannot count").
+     * frame update, so only CHANGES of a register's address are printed (the
+     * live base is needed to find a pixel's writer). The running total printed
+     * at exit counts every write, not every change.
      */
     if (disp_is_source(offset) && value != 0) {
+        static uint32_t last[0x100 / 4];
         static bool announced;
 
         disp_src_writes++;
-        if (!announced) {
+        /* Print on CHANGE per register (double-buffer flips, moved layers). */
+        if (offset < sizeof(last) && last[offset >> 2] != (uint32_t)value) {
+            last[offset >> 2] = value;
+            if (disp_log_on()) {
+                fprintf(stderr, "s5l8702.disp: SOURCE ADDRESS +0x%03" HWADDR_PRIx
+                        " = 0x%08x  (pc~0x%08x)%s\n",
+                        offset, (uint32_t)value, disp_trace_pc(),
+                        announced ? "" : " -- first source this block was given");
+            }
             announced = true;
-            fprintf(stderr, "s5l8702.disp: SOURCE ADDRESS +0x%03" HWADDR_PRIx
-                    " = 0x%08x  (pc~0x%08x) -- first time this block has been "
-                    "given something to read from\n",
-                    offset, (uint32_t)value, disp_trace_pc());
         }
     }
 
