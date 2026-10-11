@@ -150,6 +150,13 @@ enum VMStateFlags {
      * structure we are referencing to use. */
     VMS_VSTRUCT           = 0x8000,
 
+    /* The field is a single pointer that may legitimately be NULL on
+     * load (e.g. an optional timer whose subsection is present in the
+     * stream but whose local configuration did not create it). The
+     * field's info.get() must be able to consume and discard the saved
+     * value when handed a NULL pointer. */
+    VMS_NULLABLE_POINTER  = 0x20000,
+
     /* Marker for end of list */
     VMS_END = 0x10000
 };
@@ -355,6 +362,22 @@ extern const VMStateInfo vmstate_info_qlist;
     .field_exists = (_test),                                         \
     .size       = sizeof(_type),                                     \
     .flags      = VMS_SINGLE|VMS_POINTER,                            \
+    .offset     = vmstate_offset_value(_state, _field, _type),       \
+}
+
+/*
+ * Like VMSTATE_POINTER, but the pointer may legitimately be NULL on load:
+ * the field's info.get() must consume and discard the saved value when the
+ * pointer is NULL. Used for optional timers, whose subsection can be present
+ * in a migration stream even when the local configuration did not create the
+ * timer.
+ */
+#define VMSTATE_POINTER_NULLABLE(_field, _state, _version, _info, _type) { \
+    .name       = (stringify(_field)),                               \
+    .version_id = (_version),                                        \
+    .info       = &(_info),                                          \
+    .size       = sizeof(_type),                                     \
+    .flags      = VMS_SINGLE|VMS_POINTER|VMS_NULLABLE_POINTER,      \
     .offset     = vmstate_offset_value(_state, _field, _type),       \
 }
 
@@ -1024,7 +1047,7 @@ extern const VMStateInfo vmstate_info_qlist;
     VMSTATE_POINTER_TEST(_f, _s, _test, vmstate_info_timer, QEMUTimer *)
 
 #define VMSTATE_TIMER_PTR_V(_f, _s, _v)                                   \
-    VMSTATE_POINTER(_f, _s, _v, vmstate_info_timer, QEMUTimer *)
+    VMSTATE_POINTER_NULLABLE(_f, _s, _v, vmstate_info_timer, QEMUTimer *)
 
 #define VMSTATE_TIMER_PTR(_f, _s)                                         \
     VMSTATE_TIMER_PTR_V(_f, _s, 0)

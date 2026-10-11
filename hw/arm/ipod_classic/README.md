@@ -218,6 +218,7 @@ The machine supports QEMU internal snapshots on a qcow2 overlay: `savevm` captur
 | Rule | Detail |
 | -- | -- |
 | Same environment on restore | `SM1_IRQ`, `AUDIOPACE`, `SDO_FRAME_IRQ`, `DISP_ALPHA`, `LCD_FRAME_IRQ`, `SHA1_OFF`, `PMUCHARGER`, `PMUHOLD` and the SM1 slot variables change device behaviour or topology; restore with the values used at save. An exported-but-empty variable still counts as set for presence switches (`SHA1_OFF`) |
+| `-icount` on restore | `-icount` changes the icount clock and adds its timers to the vmstate. A mismatched restore no longer aborts (the absent timers are discarded on load, see `docs/issues/snapshot-fix.md`), but the virtual clock then advances at wall speed, so repeat the same `-icount` for a faithful restore |
 | ATA DMA window | `dma_cb` is a host pointer latched between the ATA command and the go-bit write; `pre_save` refuses a snapshot in that window (a few instructions). In-flight block AIO is drained by `savevm` |
 | PMU RTC | `rtc_guest_ms` is saved and re-based in `post_load`, so the guest clock continues on virtual time (default `-rtc clock=host` only) |
 | IRQ lines | Not migrated; every device re-derives its line in `post_load` (PL192 `pl192_update`, timer/I2C/LCD/SM1/ATA `update_irq`, the wheel, the UART from `UINTP`) |

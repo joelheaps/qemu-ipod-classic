@@ -176,6 +176,19 @@ static int get_timer(QEMUFile *f, void *pv, size_t size,
                      const VMStateField *field)
 {
     QEMUTimer *v = pv;
+
+    if (!v) {
+        /*
+         * The local timer does not exist. This happens when an optional
+         * timer's subsection is present in the stream but the local
+         * configuration did not create the timer (e.g. a snapshot saved
+         * with -icount and loaded without it). Consume and discard the
+         * saved expiry so the rest of the stream stays in sync; there is
+         * no timer to arm.
+         */
+        qemu_get_be64(f);
+        return 0;
+    }
     timer_get(f, v);
     return 0;
 }

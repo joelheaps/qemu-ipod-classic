@@ -133,22 +133,37 @@ int vmstate_load_state(QEMUFile *f, const VMStateDescription *vmsd,
             void *first_elem = opaque + field->offset;
             int i, n_elems = vmstate_n_elems(opaque, field);
             int size = vmstate_size(opaque, field);
+            /*
+             * A single optional timer pointer may legitimately be NULL on
+             * load: its subsection can be present in the stream (saved with a
+             * different configuration, e.g. -icount on) while the local timer
+             * was never created. get_timer() consumes and discards the saved
+             * expiry for a NULL pointer, so do not assert on it.
+             */
+            bool nullable_timer = field->flags & VMS_NULLABLE_POINTER;
 
             vmstate_handle_alloc(first_elem, field, opaque);
             if (field->flags & VMS_POINTER) {
                 first_elem = *(void **)first_elem;
-                assert(first_elem || !n_elems || !size);
+                if (!nullable_timer) {
+                    assert(first_elem || !n_elems || !size);
+                }
             }
             for (i = 0; i < n_elems; i++) {
-                void *curr_elem = first_elem + size * i;
+                void *curr_elem = first_elem ? first_elem + size * i : NULL;
 
                 if (field->flags & VMS_ARRAY_OF_POINTER) {
                     curr_elem = *(void **)curr_elem;
                 }
                 if (!curr_elem && size) {
-                    /* if null pointer check placeholder and do not follow */
-                    assert(field->flags & VMS_ARRAY_OF_POINTER);
-                    ret = vmstate_info_nullptr.get(f, curr_elem, size, NULL);
+                    if (nullable_timer) {
+                        /* consume the saved timer expiry and discard it */
+                        ret = field->info->get(f, NULL, size, field);
+                    } else {
+                        /* if null pointer check placeholder and do not follow */
+                        assert(field->flags & VMS_ARRAY_OF_POINTER);
+                        ret = vmstate_info_nullptr.get(f, curr_elem, size, NULL);
+                    }
                 } else if (field->flags & VMS_STRUCT) {
                     ret = vmstate_load_state(f, field->vmsd, curr_elem,
                                              field->vmsd->version_id);
