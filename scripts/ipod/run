@@ -49,9 +49,13 @@ SCRATCH=${SCRATCH:-assets/scratch}
 mkdir -p "$SCRATCH"
 NAME=${CONTAINER:-ipod-live}
 # Only $PWD is mounted by default: also mount the osos's and the disk's directories outside it.
+# Resolve the *file* with `readlink -f`: a workspace asset entry is a symlink into main
+# (assets/firmware/2.0.5 -> main/..., assets/disks/Emedia.img -> main/...), so `pwd` on its
+# logical dir keeps it inside $PWD, it gets no mount, and the link dangles in the container
+# (QEMU: Could not open 'assets/...').
 MOUNTS=""
 for f in "$OSOS" "$DISK"; do
-  d=$(cd "$(dirname "$f")" && pwd)
+  d=$(dirname "$(readlink -f "$f")")
   case $d/ in "$PWD"/*) ;; *) MOUNTS="$MOUNTS -v $d:$d" ;; esac
 done
 # -e NAME forwards the host var only when it is set.
