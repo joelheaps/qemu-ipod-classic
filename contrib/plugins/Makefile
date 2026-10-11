@@ -47,6 +47,10 @@ PLUGIN_CFLAGS += -I$(TOP_SRC_PATH)/include/qemu
 
 all: $(SONAMES)
 
+# Convenience: `make pctrace` (the build dir invocation in the workspace docs)
+# builds the shared object; the canonical target is libpctrace.so.
+pctrace: libpctrace.so
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(PLUGIN_CFLAGS) -c -o $@ $<
 
@@ -66,5 +70,5 @@ clean:
 	rm -f *.o *$(SO_SUFFIX) *.d
 	rm -Rf .libs
 
-.PHONY: all clean
+.PHONY: all clean pctrace
 .SECONDARY:

@@ -29,8 +29,14 @@
  * Optional args (comma-separated after the .so path):
  *   out=PATH        write trace to PATH (default: stderr, captured like DISPTRACE)
  *   window=MS       ms a trigger keeps per-hit logging open (default 800)
- *   always=on       log every hit regardless of window (bounded by cap=)
- *   cap=N           max per-hit lines per PC in always mode (default 2000)
+ *   always=on       log every hit regardless of window (complete by default;
+ *                   bound the volume with cap= / linemax= if needed)
+ *   cap=N           max per-hit lines per PC in always mode (0 = unlimited,
+ *                   default 0). Hitting a non-zero cap prints a one-time
+ *                   notice and then suppresses that PC only.
+ *   linemax=N       max total per-hit lines across every PC (0 = unlimited,
+ *                   default 0). Hitting a non-zero cap prints a one-time
+ *                   notice and then suppresses all further per-hit lines.
  *   pc=0xADDR:LABEL add a watched PC (repeatable) -- e.g. HandleSelect once known
  *   trig=0xADDR     also treat this PC as a window trigger (repeatable)
  *   quiet=0xADDR    make a watched PC count-only (no per-hit lines); strcmp is
@@ -58,9 +64,13 @@
  *   memr=0xADDR:REG:OFF:LEN:LABEL  at ADDR read core reg REG, then LEN bytes
  *                               (decimal, max 256, clamped -- a larger LEN warns)
  *                               of guest memory at REG+OFF (OFF hex, may be
- *                               negative); logged as hex after the regpc line
- *                               (e.g. memr=0x...:0:0x1c:4:blit). A read that
- *                               crosses into unmapped memory logs <unmapped>.
+ *                               negative); logged after the regpc line (e.g.
+ *                               memr=0x...:0:0x1c:4:blit). LEN 1/2/4/8 is
+ *                               printed as a little-endian *value*, so a
+ *                               pointer read matches gdb's `x/wx` rather than
+ *                               looking byte-swapped; other LENs print the raw
+ *                               byte string. A read that crosses into unmapped
+ *                               memory logs <unmapped>.
  *   regcap=N                    max logged register lines per regpc/sendex/memr
  *                               PC (default 400; counts keep rising past the cap).
  *   NOTE regpc/sendex/memr may repeat the SAME PC: every probe is installed (each
@@ -102,6 +112,7 @@ typedef struct {
     const char *label;
     bool trigger;       /* opens the per-hit logging window */
     bool quiet;         /* count only, never emit a per-hit line (hot PCs) */
+    bool cap_warned;    /* one-shot "cap reached" notice already emitted */
     guint64 count;      /* total times executed (all run) */
 } WatchPC;
 
@@ -117,8 +128,10 @@ static gint64 window_us;            /* per-hit logging window length (microsecon
 static gint64 window_end;           /* monotonic-us deadline; 0 = closed */
 static gint64 t0;                   /* first-hit timestamp, for relative stamps */
 static bool always;                 /* log every hit, ignore window */
-static guint64 cap;                 /* per-PC line cap in always mode */
-static guint64 lines;               /* total lines emitted (global sanity cap) */
+static guint64 cap;                 /* per-PC line cap in always mode (0=off) */
+static guint64 line_max;            /* global per-hit line cap (0=off) */
+static bool line_max_warned;        /* one-shot notice when line_max is hit */
+static guint64 lines;               /* total lines emitted */
 
 /*
  * RANGE TRACE (discovery mode). range=0xLO-0xHI logs the first-seen PC of every
@@ -139,7 +152,6 @@ static guint64 range_win_lines;     /* lines logged since the window opened */
 static uint64_t range_lo, range_hi; /* [lo,hi); hi==0 disables range trace */
 static GHashTable *range_tbl;       /* addr -> RangePC* */
 static guint win_gen;               /* bumped each time a trigger opens the window */
-static const guint64 PCTRACE_LINE_MAX = 5000000;
 
 /*
  * MEMORY-WRITE WATCH (the non-invasive watchpoint). memw=0xLO-0xHI logs every
@@ -253,6 +265,40 @@ static bool audump_write(const char *path, uint64_t va, uint32_t len)
     return n == mem_buf->len;
 }
 
+/* Print a guest memory read as a number when it is a natural integer width.
+ * cpu_memory_rw_debug fills @p in target (little-endian) byte order, so the old
+ * byte-by-byte dump made a 4-byte pointer look byte-swapped next to gdb's x/wx.
+ * LEN 1/2/4/8 -> little-endian value; any other LEN -> raw bytes. */
+static void print_mem_value(FILE *f, const guint8 *p, guint len)
+{
+    switch (len) {
+    case 1:
+        fprintf(f, "0x%02x", p[0]);
+        return;
+    case 2:
+        fprintf(f, "0x%04x", p[0] | (p[1] << 8));
+        return;
+    case 4:
+        fprintf(f, "0x%08x", (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                               ((uint32_t)p[2] << 16) |
+                               ((uint32_t)p[3] << 24));
+        return;
+    case 8: {
+        uint64_t v = 0;
+        for (int i = 7; i >= 0; i--) {
+            v = (v << 8) | p[i];
+        }
+        fprintf(f, "0x%016" PRIx64, v);
+        return;
+    }
+    default:
+        for (guint i = 0; i < len; i++) {
+            fprintf(f, "%02x", p[i]);
+        }
+        return;
+    }
+}
+
 /* Read a 32-bit guest core register by gdb index. iPod ARM is little-endian. */
 static bool read_reg32(int reg, uint32_t *out)
 {
@@ -286,7 +332,7 @@ static void add_pc(uint64_t addr, const char *label, bool trigger, bool quiet)
         ex->trigger = ex->trigger || trigger;
         return;
     }
-    WatchPC w = { addr, g_strdup(label), trigger, quiet, 0 };
+    WatchPC w = { addr, g_strdup(label), trigger, quiet, false, 0 };
     g_array_append_val(watch, w);
 }
 
@@ -315,10 +361,24 @@ static void vcpu_pc_exec(unsigned int cpu_index, void *udata)
     if (!in_window) {
         return;
     }
-    if (lines >= PCTRACE_LINE_MAX) {
+    if (line_max && lines >= line_max) {
+        if (!line_max_warned) {
+            line_max_warned = true;
+            fprintf(out, "PCTRACE WARNING: linemax=%" PRIu64 " reached; "
+                    "all further per-hit lines suppressed (linemax=0 disables)\n",
+                    line_max);
+            fflush(out);
+        }
         return;
     }
     if (always && cap && w->count > cap) {
+        if (!w->cap_warned) {
+            w->cap_warned = true;
+            fprintf(out, "PCTRACE WARNING: cap=%" PRIu64 " reached for %s "
+                    "@0x%08" PRIx64 "; that PC is no longer logged "
+                    "(cap=0 disables)\n", cap, w->label, w->addr);
+            fflush(out);
+        }
         return;
     }
 
@@ -347,7 +407,7 @@ static void vcpu_range_exec(unsigned int cpu_index, void *udata)
     if (t0 == 0) {
         t0 = now;
     }
-    if (lines >= PCTRACE_LINE_MAX || range_win_lines >= range_cap) {
+    if ((line_max && lines >= line_max) || range_win_lines >= range_cap) {
         return;
     }
     lines++;
@@ -521,9 +581,7 @@ static void vcpu_regpc_exec(unsigned int cpu_index, void *udata)
             g_byte_array_set_size(mem_buf, 0);
             if (qemu_plugin_read_memory_vaddr(va, mem_buf, rp->mem_len)) {
                 fprintf(out, "  mem[0x%08" PRIx64 "]=", va);
-                for (guint i = 0; i < mem_buf->len; i++) {
-                    fprintf(out, "%02x", mem_buf->data[i]);
-                }
+                print_mem_value(out, mem_buf->data, mem_buf->len);
             } else {
                 fprintf(out, "  mem[0x%08" PRIx64 "]=<unmapped>", va);
             }
@@ -736,7 +794,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 {
     out = stderr;
     window_us = 800 * 1000;         /* 800 ms */
-    cap = 2000;
+    cap = 0;                        /* 0 = unlimited (complete always-log) */
+    line_max = 0;                   /* 0 = unlimited (see linemax=) */
     bool nodefault = false;
 
     /* First pass: options that must be known before we build the table. */
@@ -750,6 +809,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
             always = kv[1] && !g_strcmp0(kv[1], "on");
         } else if (!g_strcmp0(kv[0], "cap")) {
             cap = g_ascii_strtoull(kv[1], NULL, 10);
+        } else if (!g_strcmp0(kv[0], "linemax") && kv[1]) {
+            line_max = g_ascii_strtoull(kv[1], NULL, 10);
         } else if (!g_strcmp0(kv[0], "range") && kv[1]) {
             /* range=0xLO-0xHI */
             g_auto(GStrv) lh = g_strsplit(kv[1], "-", 2);
