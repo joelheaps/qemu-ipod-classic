@@ -473,7 +473,7 @@ static void ipod_classic_i2s_drain(void *opaque)
 {
     IPodClassicI2SState *s = opaque;
     uint64_t before, moved;
-    int64_t delay_ns;
+    int64_t delay_ns, now, base;
     uint32_t rate;
 
     if (!s->tx_running || !s->dmac0) {
@@ -501,7 +501,18 @@ static void ipod_classic_i2s_drain(void *opaque)
                 "(%u Hz) -> next tick in %" PRId64 " us\n",
                 moved, rate, delay_ns / 1000);
     }
-    s->next_tick_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns;
+    /*
+     * Schedule from the previous deadline, not from now: the timer fires late
+     * by a variable amount, and basing the next tick on "now" adds that latency
+     * to every period, so the guest ran ~5% slower than real time and starved
+     * the live audio sink. Resync to now only after an idle poll or a long stall.
+     */
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    base = s->next_tick_ns;
+    if (moved < 2 || base == 0 || now - base > 50 * SCALE_MS) {
+        base = now;
+    }
+    s->next_tick_ns = base + delay_ns;
     timer_mod(s->drain_timer, s->next_tick_ns);
 }
 
@@ -511,6 +522,7 @@ static void i2s_pace_arm(IPodClassicI2SState *s)
         return;
     }
     /* First tick soon; the drain callback then paces itself. */
+    s->next_tick_ns = 0;
     timer_mod(s->drain_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000);
 }
 
