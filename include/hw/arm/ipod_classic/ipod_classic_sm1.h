@@ -174,6 +174,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicSM1State, IPOD_CLASSIC_SM1)
 #define S5L8702_SM1_POS_RING_FRAMES  (22 * 1024)
 
 struct IPodClassicI2SState;
+/* Largest decoded packet in halfwords: ALAC's 4096 stereo frames. */
+#define S5L8702_SM1_DEC_PCM_MAX 8192
+
 struct Sm1Dec;
 
 struct IPodClassicSM1State {
@@ -238,6 +241,7 @@ struct IPodClassicSM1State {
     uint8_t dec_w;          /* next output slot the engine fills */
     bool dec_irq_level;     /* decoder frame-done line held until acknowledged */
     bool dec_published;     /* slot states initialised for this chain */
+    bool dec_alac;          /* slot geometry published for ALAC (one big slot), not AAC */
 };
 
 /* Give SM1 the I2S whose playback its position registers track. */

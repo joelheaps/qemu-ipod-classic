@@ -111,7 +111,7 @@ The retailOS decodes neither audio nor video in software. It hands each compress
 
 ```mermaid
 flowchart LR
-    G[retailOS player] -->|compressed AAC frame| SM1["SM1 0x38500000<br/>libavcodec decode"]
+    G[retailOS player] -->|compressed AAC / ALAC frame| SM1["SM1 0x38500000<br/>libavcodec decode"]
     SM1 -->|PCM + slot state| RING[(IRAM1 slot ring<br/>0x22038000)]
     RING --> MIX[guest mixer / effects]
     MIX -->|buffers| DMA["DMAC0 PL080<br/>IRQ 16"]
@@ -132,13 +132,25 @@ The codec chip is only configured over I2C, never in the sample path. The dashed
 | Channel power-up | Per sub-block (base + `idx*0x20` for idx < 4, `0x100`/`0x180`/`0x200`/`0x230` for 4..7): writes 4 to `+0x10`, polls `+0x14 & 7` up to ten times for 7, writes 16. A poll that never reads 7 is recorded as an error (−236), not a hang | `+0x14` reads 7 once `+0x10` has been written |
 | Clock ready | Spins on `+0xa98` bit 2 with no timeout; start/resume is gated on it | Raises the bit when the guest first powers the engine (a channel command, the codec enable `+0x824`, the `+0x400` start or the `+0xc48` commit) |
 | Run | Writes 1 to `+0x400`, reads it back expecting 1, then polls `& 3` for 1 with no timeout | Plain write latch |
-| Frame submit | Sub-block 4: chain at `+0x100`, descriptor `{0, len<<16\|flags, buf}`. Enable word `0x2203ff00 & 7 == 7`; sample-rate index at `+6` | Decodes the frame with libavcodec (`ipod_classic_sm1_dec.c`, AAC only; built when `-Dsm1_decoder=auto` finds libavcodec) |
-| Output slots | Reads PCM and state from IRAM1: header `0x2203ff28`, slots `0x22038000` (count `+2`, stride in halfwords `+4`, per-slot state `+0xa` and size `+0xc`), buffers `0x22038100` | Writes the decoded PCM and slot state there |
+| Frame submit | Sub-block 4: chain at `+0x100`, descriptor `{0, len<<16\|flags, buf}`. Enable word `0x2203ff00 & 7 == 7`; sample-rate index at `+6` | Decodes the frame with libavcodec (`ipod_classic_sm1_dec.c`: AAC and ALAC, see [Codecs](#codecs); built when `-Dsm1_decoder=auto` finds libavcodec) |
+| Output slots | Reads PCM and state from IRAM1 (two slots of 4096 halfwords; ALAC one of 8192): header `0x2203ff28`, slots `0x22038000` (count `+2`, stride in halfwords `+4`, per-slot state `+0xa` and size `+0xc`), buffers `0x22038100` | Writes the decoded PCM and slot state there |
 | Frame-done IRQ | VIC0 line 18 handler acks through `+0xc48` | Holds the line until the ack. Raised on the guest's arming write, an approximation |
 | Stream position | Reads `+0xa44`/`+0xa48` (four channels, stride `0x14`) and uses the value as a ring offset: write pointer = `0x22020000 + pos*4` | I2S transmitted stereo frames, wrapped at 22×1024 frames so the guest's writes stay below the slot area (a model choice; the real ring size is unknown) |
 | I2S0 setup | Writes `CLKCON`=1, `TXCON`=`0x0b100019`, `RXCON`=`0x1000`, `CLKDIV`=272, `TXCOM`=6 (start), then reads `TXCOM` back | Register file with honest readback. Sample rate = 12 MHz / `CLKDIV` |
 | PCM out | DMAC0 streams 16-bit samples to the TX FIFO at `+0x10` (DMA request line `0xA`); its terminal-count IRQ paces the player | FIFO sink. The paced drain gates DMAC0's request line at the sample rate, so the IRQ arrives at playback tempo and the Now Playing clock advances. Unpaced, the DMA never moves and the stream position stays 0 |
 | Codec | CS42L55 at I2C0 `0x4A`: write the register number, then data; read-modify-write | Register file with an auto-advancing pointer and the chip-version register. No audio path behind it |
+
+#### Codecs
+
+The guest's setup routine (`pcm_push`, `0x0809a898`) switches on a codec byte (values 0, 1, 3, 5 and 7 have branches) and fills the control block at `0x2203ff00`. The model decodes the codecs it has measured, told apart by the enable word:
+
+| Codec | Enable word `&7` / `&0x1e` | Control block | Slot ring | Verified |
+| -- | -- | -- | -- | -- |
+| AAC (LC) | 7 / `0x0e` (`0x2d2f`) | `+6` = MPEG-4 frequency index | 2 slots × 4096 halfwords | Bit-identical to ffmpeg |
+| MP3 (CBR and VBR) | 5 (`0x2d2d`) | none (zero) | 2 slots × 4096 halfwords | Bit-identical to ffmpeg (encoder delay trimmed by ffmpeg, not by the guest) |
+| ALAC | 7 / `0x1e` (`0x2d3f`) | `+4` bit depth, `+6` pb, `+8` kb, `+0xa` mb (the magic cookie's values) | 1 slot × 8192 halfwords | 16-bit: bit-identical to ffmpeg; 24-bit: within 1 LSB (rounding to 16 bits) |
+
+An ALAC packet (4096 stereo frames, about 8 to 14 KiB compressed) is handed over whole, and its decode is 8192 halfwords. The guest counts every frame-done report as one packet consumed, so the packet has to leave in a single slot (splitting it across reports made the guest feed the next packet early and the model drop it). Two such slots would not fit IRAM1 below the control block, so the ring has one slot. The silicon's 24-bit-to-16-bit reduction is not known; the model rounds. The guest hands MP3 over as one raw frame (417 or 418 bytes at 128 kbit/s) per chain, including a VBR file's first (Xing) frame. WAV and AIFF never reach SM1: the guest turns them into PCM itself, and the capture is bit-identical to the source. HE-AAC and Audible are not modelled or measured: no encoder for them is available in the dev image (its libfdk-aac is built without SBR) and there is no Audible encoder at all. Any other enable word logs `SM1: codec enable word ... not modelled` under `-d unimp`.
 
 | Variable | Default | Meaning |
 | -- | -- | -- |
@@ -248,7 +260,9 @@ Read once at machine or device creation. Audio and video variables are listed wi
 | `IPOD_WHEEL_STEP=N` | 6 | Click-wheel units per key press (1-35; the firmware accepts 6-35, below 6 exercises its acceleration path) |
 | `IPOD_WHEEL_TICK_MS=N` | 40 | Interval between synthetic wheel ticks (1-1000) |
 | `IPOD_WHEEL_UNTOUCH_MS=N` | 1500 | Idle time before the finger is lifted (10-60000) |
-| `IPOD_WHEEL_BTN_REPEAT_MS=N` | 400 | Button auto-repeat interval, 0 = off (0-5000) |
+| `IPOD_WHEEL_BTN_DWELL_MS=N` | 80 | Minimum time between two button edges, so a press and its release (or two presses) are never the same instant (0-5000) |
+| `IPOD_WHEEL_ACK_TIMEOUT_MS=N` | 1000 | Send the next packet anyway if the guest's wheel task has not consumed the last within this time (0-60000) |
+| `IPOD_WHEEL_STATE_BLOCK=ADDR` | 0x089d2b8c | Guest address of the retailOS 2.0.5 wheel state block that acknowledges a packet; 0 = no acknowledgement (any other firmware) |
 
 ### Measurement aids
 
@@ -267,7 +281,7 @@ Read once at machine or device creation. Audio and video variables are listed wi
 | `ATATRACE` | ATA register accesses |
 | `LCDTRACE=1` | LCD interface accesses (display-pipe tracing: Video) |
 | `TIMERTRACE` | Timer channel programming and the rate the model derives |
-| `WHEELTRACE=1`, `GPIOTRACE=1` | Click-wheel / GPIO accesses |
+| `WHEELTRACE=1`, `GPIOTRACE=1` | Click-wheel / GPIO accesses; `WHEELTRACE=2` also logs every key event, button edge and packet with its virtual time |
 | `PMUTRACE`, `PMURTC=1` | PMU register writes (limited per address) / each PMU RTC block read |
 
 ## Clock / PLL block

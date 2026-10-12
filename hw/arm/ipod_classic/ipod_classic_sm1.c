@@ -436,7 +436,15 @@ static bool sm1_trace_on(void)
  */
 #define SM1_CTL          0x2203ff00
 #define SM1_DEC_CAP      4096        /* halfwords per slot (HE-AAC frame)   */
+#define SM1_FRAME_MAX    32768       /* bytes of one compressed packet (ALAC 24-bit ~8 KiB) */
 #define SM1_DEC_SLOTS    2            /* power of two (the guest wraps its index) */
+/*
+ * ALAC: one 4096-frame packet is 8192 halfwords, and the guest counts every frame-done report as
+ * one packet consumed, so the packet must leave in one slot. Two such slots would not fit IRAM1
+ * below the control block at 0x2203ff00, so ALAC publishes a ring of one (a power of two).
+ */
+#define SM1_DEC_CAP_ALAC 8192
+#define SM1_DEC_SLOTS_ALAC 1
 #define SM1_SLOT_BUF     0x22038100
 
 static bool sm1_decode_on(void)
@@ -470,10 +478,22 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
 {
     uint32_t chain = s->reg[S5L8702_SM1_CHAIN / 4];
     uint32_t d[3];
-    uint8_t frame[SM1_DEC_CAP];
-    int16_t pcm[SM1_DEC_CAP];
-    unsigned w = s->dec_w;
+    uint8_t frame[SM1_FRAME_MAX];
+    uint16_t ctl = sm1_rd16(SM1_CTL);
+    /*
+     * The enable word names the codec (measured, 2.0.5 pcm_push): AAC 0x2d2f and ALAC 0x2d3f
+     * both have &7 == 7 (ALAC also sets 0x1e and fills +4/+6/+8/+10 with the magic cookie's bit
+     * depth, pb, kb and mb: 24, 40, 14, 10 for an ffmpeg file; AAC leaves them zero and puts the
+     * frequency index at +6); MP3 is 0x2d2d, &7 == 5, with raw frames and no parameters.
+     */
+    Sm1Codec codec = (ctl & 7) == 7 ? ((ctl & 0x1e) == 0x1e ? SM1_CODEC_ALAC : SM1_CODEC_AAC)
+                     : (ctl & 7) == 5 ? SM1_CODEC_MP3 : SM1_CODEC_NONE;
+    bool alac = codec == SM1_CODEC_ALAC;
+    unsigned slots = alac ? SM1_DEC_SLOTS_ALAC : SM1_DEC_SLOTS;
+    unsigned cap = alac ? SM1_DEC_CAP_ALAC : SM1_DEC_CAP;
+    unsigned w;
     hwaddr arr = SM1_SLOT_ARRAY;
+    int16_t pcm[S5L8702_SM1_DEC_PCM_MAX];
     uint32_t len;
     int n;
 
@@ -484,41 +504,66 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
     len = le32_to_cpu(d[1]) >> 16;
     if (sm1_trace_on()) {
         fprintf(stderr, "SM1DEC chain=0x%08x desc={%08x,%08x,%08x} len=%u "
-                "slot%u state=%u\n", chain, le32_to_cpu(d[0]),
-                le32_to_cpu(d[1]), le32_to_cpu(d[2]), len, w,
-                sm1_rd16(arr + 10 + w * 4));
+                "slot%u state=%u ctl=%04x %04x %04x %04x %04x %04x\n", chain,
+                le32_to_cpu(d[0]), le32_to_cpu(d[1]), le32_to_cpu(d[2]), len, s->dec_w % slots,
+                sm1_rd16(arr + 10 + s->dec_w % slots * 4), sm1_rd16(SM1_CTL),
+                sm1_rd16(SM1_CTL + 2), sm1_rd16(SM1_CTL + 4),
+                sm1_rd16(SM1_CTL + 6), sm1_rd16(SM1_CTL + 8),
+                sm1_rd16(SM1_CTL + 10));
+        {
+            uint8_t head[16];
+            cpu_physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, head,
+                                     sizeof(head));
+            fprintf(stderr, "SM1DEC data %02x%02x%02x%02x %02x%02x%02x%02x "
+                    "%02x%02x%02x%02x %02x%02x%02x%02x\n", head[0], head[1],
+                    head[2], head[3], head[4], head[5], head[6], head[7],
+                    head[8], head[9], head[10], head[11], head[12], head[13],
+                    head[14], head[15]);
+        }
     }
     if (len == 0 || len > sizeof(frame)) {
         return false;
+    }
+    if (s->dec_alac != alac) {           /* codec changed: republish the slot geometry */
+        s->dec_alac = alac;
+        s->dec_published = false;
     }
     if (!s->dec_published) {
         for (unsigned i = 0; i < SM1_DEC_SLOTS; i++) {
             sm1_wr16(arr + 10 + i * 4, 0);
         }
-        w = s->dec_w = 0;
+        s->dec_w = 0;
         s->dec_published = true;
     }
+    w = s->dec_w % slots;
     if (sm1_rd16(arr + 10 + w * 4) != 0) {
         return false;                    /* output slot still owned by the guest */
     }
-    cpu_physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, frame, len);
-    if (!s->dec) {
-        s->dec = sm1_dec_new();
-    }
-    if ((sm1_rd16(SM1_CTL) & 7) == 7) {
-        n = sm1_dec_frame(s->dec, SM1_CODEC_AAC, sm1_rd16(SM1_CTL + 6) & 15,
-                          frame, len, pcm, SM1_DEC_CAP);
-    } else {
-        n = -1;
-        qemu_log_mask(LOG_UNIMP, "SM1: codec enable word 0x%04x not modelled\n",
-                      sm1_rd16(SM1_CTL));
-    }
-    if (sm1_trace_on()) {
-        fprintf(stderr, "SM1DEC frame len=%u -> n=%d slot%u data %02x%02x%02x%02x%02x%02x\n", len, n, w, frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]);
-    }
-    if (n <= 0) {                        /* no output / bad frame: a silent slot */
-        n = 2048;
-        memset(pcm, 0, n * 2);
+    {
+        cpu_physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, frame, len);
+        if (!s->dec) {
+            s->dec = sm1_dec_new();
+        }
+        if (codec != SM1_CODEC_NONE) {
+            Sm1Params p = {
+                .freq_idx = sm1_rd16(SM1_CTL + 6) & 15,
+                .bits = sm1_rd16(SM1_CTL + 4), .pb = sm1_rd16(SM1_CTL + 6),
+                .kb = sm1_rd16(SM1_CTL + 8), .mb = sm1_rd16(SM1_CTL + 10),
+            };
+
+            n = sm1_dec_frame(s->dec, codec, &p, frame, len, pcm, cap);
+        } else {
+            n = -1;
+            qemu_log_mask(LOG_UNIMP, "SM1: codec enable word 0x%04x not modelled\n", ctl);
+        }
+        if (sm1_trace_on()) {
+            fprintf(stderr, "SM1DEC frame len=%u -> n=%d slot%u data %02x%02x%02x%02x%02x%02x\n",
+                    len, n, w, frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]);
+        }
+        if (n <= 0) {                    /* no output / bad frame: a silent slot */
+            n = 2048;
+            memset(pcm, 0, n * 2);
+        }
     }
     {   /* SM1_DEC_DUMP=file: dev aid, appends each decoded frame (s16le) */
         static FILE *dump;
@@ -540,11 +585,11 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
             fflush(fd);
         }
     }
-    cpu_physical_memory_write(SM1_SLOT_BUF + w * SM1_DEC_CAP * 2, pcm, n * 2);
+    cpu_physical_memory_write(SM1_SLOT_BUF + w * cap * 2, pcm, n * 2);
     sm1_wr16(SM1_SLOT_DESC + 0, 3);
     sm1_wr16(SM1_SLOT_DESC + 2, 0);
-    sm1_wr16(SM1_SLOT_DESC + 4, SM1_DEC_CAP);
-    sm1_wr16(arr + 2, SM1_DEC_SLOTS);
+    sm1_wr16(SM1_SLOT_DESC + 4, cap);
+    sm1_wr16(arr + 2, slots);
     /*
      * The per-slot stride getdata (0x080bdda8) actually reads lives in the
      * slot block at +4, NOT in the header at 0x2203ff2c: getdata computes
@@ -555,12 +600,12 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
      * odd-frame-dropped stutter. Publish the same
      * stride the buffers are written with (SM1_DEC_CAP halfwords).
      */
-    sm1_wr16(arr + 4, SM1_DEC_CAP);
+    sm1_wr16(arr + 4, cap);
     sm1_wr16(arr + 12 + w * 4, n);
     sm1_wr16(arr + 10 + w * 4, 1);
     d[1] = cpu_to_le32(le32_to_cpu(d[1]) & 0xffff);   /* descriptor consumed */
     cpu_physical_memory_write((chain & ~3u) + 4, &d[1], 4);
-    s->dec_w = (w + 1) % SM1_DEC_SLOTS;
+    s->dec_w = (w + 1) % slots;
     return true;
 }
 

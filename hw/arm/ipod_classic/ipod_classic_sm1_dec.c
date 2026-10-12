@@ -11,7 +11,8 @@ struct Sm1Dec {
     AVPacket *pkt;
     AVFrame *frm;
     Sm1Codec codec;
-    int freq_idx, chans;
+    Sm1Params params;
+    int chans;
 };
 
 bool sm1_dec_available(void) { return true; }
@@ -66,8 +67,63 @@ static bool dec_open_aac(Sm1Dec *d, int freq_idx, int chans)
         return false;
     }
     d->codec = SM1_CODEC_AAC;
-    d->freq_idx = freq_idx;
+    d->params.freq_idx = freq_idx;
     d->chans = chans;
+    return true;
+}
+
+
+/*
+ * ALAC needs the 36-byte magic cookie that the container's 'alac' atom carries; the guest
+ * hands the engine its depth and Rice parameters instead (bit depth, pb, kb, mb in the control
+ * block). The frame length is the format's fixed 4096 and the rate does not matter to the
+ * decoder: the I2S clock sets the playback rate.
+ */
+static bool dec_open_alac(Sm1Dec *d, const Sm1Params *p)
+{
+    const AVCodec *c = avcodec_find_decoder(AV_CODEC_ID_ALAC);
+    uint8_t cookie[36] = {
+        0, 0, 0, 36, 'a', 'l', 'a', 'c', 0, 0, 0, 0,
+        0, 0, 0x10, 0,              /* frameLength 4096 */
+        0, p->bits, p->pb, p->mb, p->kb, 2,
+        0, 255,                     /* maxRun */
+        0, 0, 0, 0, 0, 0, 0, 0,     /* maxFrameBytes, avgBitRate */
+        0, 0, 0xac, 0x44,           /* sampleRate 44100 */
+    };
+
+    dec_close(d);
+    if (!c) {
+        return false;
+    }
+    d->ctx = avcodec_alloc_context3(c);
+    d->ctx->extradata = av_mallocz(sizeof(cookie) + AV_INPUT_BUFFER_PADDING_SIZE);
+    memcpy(d->ctx->extradata, cookie, sizeof(cookie));
+    d->ctx->extradata_size = sizeof(cookie);
+    if (avcodec_open2(d->ctx, c, NULL) < 0) {
+        dec_close(d);
+        return false;
+    }
+    d->codec = SM1_CODEC_ALAC;
+    d->params = *p;
+    d->chans = 2;
+    return true;
+}
+
+/* MP3 frames are self-describing: no extradata. */
+static bool dec_open_mp3(Sm1Dec *d)
+{
+    const AVCodec *c = avcodec_find_decoder(AV_CODEC_ID_MP3);
+
+    dec_close(d);
+    if (!c) {
+        return false;
+    }
+    d->ctx = avcodec_alloc_context3(c);
+    if (avcodec_open2(d->ctx, c, NULL) < 0) {
+        dec_close(d);
+        return false;
+    }
+    d->codec = SM1_CODEC_MP3;
     return true;
 }
 
@@ -77,19 +133,53 @@ static int16_t to_s16(float v)
     return x > 32767 ? 32767 : x < -32768 ? -32768 : x;
 }
 
-int sm1_dec_frame(Sm1Dec *d, Sm1Codec codec, int aac_freq_idx,
+/* One sample of plane `ch` as s16, whatever the decoder's sample format. */
+static int16_t sample_s16(const AVFrame *f, int ch, int i)
+{
+    switch (f->format) {
+    case AV_SAMPLE_FMT_FLTP:
+        return to_s16(((float *)f->extended_data[ch])[i]);
+    case AV_SAMPLE_FMT_S16P:
+        return ((int16_t *)f->extended_data[ch])[i];
+    case AV_SAMPLE_FMT_S32P: {   /* left-justified: keep the top 16 bits, rounded */
+        int64_t x = ((int32_t *)f->extended_data[ch])[i];
+        x = (x + 0x8000) >> 16;
+        return x > 32767 ? 32767 : x;
+    }
+    default:
+        return 0;
+    }
+}
+
+static bool dec_supported(const AVFrame *f)
+{
+    return f->format == AV_SAMPLE_FMT_FLTP || f->format == AV_SAMPLE_FMT_S16P ||
+           f->format == AV_SAMPLE_FMT_S32P;
+}
+
+int sm1_dec_frame(Sm1Dec *d, Sm1Codec codec, const Sm1Params *p,
                   const uint8_t *frame, int len, int16_t *pcm, int cap)
 {
-    /* The first syntactic element tells mono (SCE) from stereo (CPE). */
-    int chans = (len > 0 && (frame[0] >> 5) == 0) ? 1 : 2;
+    /* The first syntactic element tells mono (SCE) from stereo (CPE); ALAC is always stereo here. */
+    int chans = codec == SM1_CODEC_ALAC || (len > 0 && (frame[0] >> 5) != 0) ? 2 : 1;
 
-    if (codec != SM1_CODEC_AAC || len <= 0) {
+    if (len <= 0 || codec == SM1_CODEC_NONE) {
         return -1;
     }
-    if (!d->ctx || d->freq_idx != aac_freq_idx || d->chans != chans) {
-        if (!dec_open_aac(d, aac_freq_idx, chans)) {
+    if (codec == SM1_CODEC_AAC &&
+        (!d->ctx || d->codec != codec || d->params.freq_idx != p->freq_idx || d->chans != chans)) {
+        if (!dec_open_aac(d, p->freq_idx, chans)) {
             return -1;
         }
+    }
+    if (codec == SM1_CODEC_ALAC &&
+        (!d->ctx || d->codec != codec || memcmp(&d->params, p, sizeof(*p)))) {
+        if (!dec_open_alac(d, p)) {
+            return -1;
+        }
+    }
+    if (codec == SM1_CODEC_MP3 && (!d->ctx || d->codec != codec) && !dec_open_mp3(d)) {
+        return -1;
     }
     if (av_new_packet(d->pkt, len) < 0) {
         return -1;
@@ -101,15 +191,13 @@ int sm1_dec_frame(Sm1Dec *d, Sm1Codec codec, int aac_freq_idx,
         return r < 0 ? -1 : 0;
     }
     int n = d->frm->nb_samples, ch = d->frm->ch_layout.nb_channels;
-    if (2 * n > cap || ch < 1 || d->frm->format != AV_SAMPLE_FMT_FLTP) {
+    if (2 * n > cap || ch < 1 || !dec_supported(d->frm)) {
         av_frame_unref(d->frm);
         return -1;
     }
     for (int i = 0; i < n; i++) {
-        float l = ((float *)d->frm->extended_data[0])[i];
-        float rr = ch > 1 ? ((float *)d->frm->extended_data[1])[i] : l;
-        pcm[2 * i] = to_s16(l);
-        pcm[2 * i + 1] = to_s16(rr);
+        pcm[2 * i] = sample_s16(d->frm, 0, i);
+        pcm[2 * i + 1] = sample_s16(d->frm, ch > 1 ? 1 : 0, i);
     }
     av_frame_unref(d->frm);
     return 2 * n;
@@ -120,6 +208,6 @@ bool sm1_dec_available(void) { return false; }
 Sm1Dec *sm1_dec_new(void) { return NULL; }
 void sm1_dec_free(Sm1Dec *d) { }
 void sm1_dec_flush(Sm1Dec *d) { }
-int sm1_dec_frame(Sm1Dec *d, Sm1Codec c, int f, const uint8_t *fr, int l,
+int sm1_dec_frame(Sm1Dec *d, Sm1Codec c, const Sm1Params *pr, const uint8_t *fr, int l,
                   int16_t *p, int cap) { return -1; }
 #endif

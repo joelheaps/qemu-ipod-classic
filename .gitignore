@@ -28,7 +28,7 @@ GTAGS
 # iPod classic 6G work: firmware images, extracted blobs, Rockbox reference
 # sources and test binaries. Big and not ours to redistribute.
 # Only the top-level assets/README.md and the disk image it documents are tracked.
-# Workspaces symlink main's entries into their own assets/<dir>/ (mise run ws:link-assets),
+# Workspaces symlink main's entries into their own assets/<dir>/ (the scripts/ws-setup hook that agentkit ws add runs),
 # which these rules ignore.
 /assets/*
 !/assets/README.md
