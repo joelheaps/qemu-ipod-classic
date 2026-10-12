@@ -15,21 +15,29 @@ from pathlib import Path
 
 from cli import REPO, parse_flags, repo_path
 from fwtool import read_firmware
+from ipod_library import PORT_BLUE, populate
 
 BS = 4096
 FW_BLOCK = 8  # firmware partition starts at byte 0x8000
 FAT_BYTES = 1 << 30
-USAGE = "usage: make-disk --firmware=PATH --disks=PATH (or FIRMWARE=, DISK= in the environment)"
+USAGE = (
+    "usage: make-disk --firmware=PATH --disks=PATH [--track=PATH|portblue] "
+    "(or FIRMWARE=, DISK=, TRACK= in the environment)"
+)
 
 
-def build_image(payload: bytes, out: Path) -> None:
-    """Write the disk for PAYLOAD to OUT as qcow2 (needs mkfs.fat and build/qemu-img)."""
+def build_image(payload: bytes, out: Path, track: Path | None = None) -> None:
+    """Write the disk for PAYLOAD to OUT as qcow2 (needs mkfs.fat and build/qemu-img).
+
+    With TRACK the volume holds a one-track library (needs mtools, ffprobe and libgpod too)."""
     fw = payload + b"\0" * (-len(payload) % BS)
     with tempfile.TemporaryDirectory() as tmp:
         fat, raw = Path(tmp, "fat"), Path(tmp, "disk")
         with fat.open("wb") as f:
             f.truncate(FAT_BYTES)
         subprocess.check_call(["mkfs.fat", "-F", "32", "-s", "8", fat], stdout=subprocess.DEVNULL)  # noqa: S603, S607
+        if track:
+            populate(fat, track)
         fatb = bytearray(fat.read_bytes())
         # The osos volume classifier rejects a FAT volume unless "FAT" sits at +0x34 of the boot
         # sector (BPB reserved bytes) and its backup.
@@ -50,10 +58,10 @@ def build_image(payload: bytes, out: Path) -> None:
 
 def parse_args(argv: list[str]) -> dict[str, str]:
     """Parse the flags (FIRMWARE and DISK are the environment defaults)."""
-    return parse_flags(argv, {"firmware": "FIRMWARE", "disks": "DISK"}, USAGE)
+    return parse_flags(argv, {"firmware": "FIRMWARE", "disks": "DISK", "track": "TRACK"}, USAGE)
 
 
-def prepare(argv: list[str]) -> tuple[Path, Path, bytes, str | None] | None:
+def prepare(argv: list[str]) -> tuple[Path, Path, bytes, str | None, Path | None] | None:
     """Resolve and validate the firmware/disks flags; return None when there is nothing to build."""
     opts = parse_args(argv)
     # With nothing configured (e.g. as the depends= of ipod:run) there is nothing to build.
@@ -73,7 +81,10 @@ def prepare(argv: list[str]) -> tuple[Path, Path, bytes, str | None] | None:
         payload, version = read_firmware(fw)
     except (ValueError, OSError) as e:
         sys.exit(f"make-disk: {e}")
-    return fw, out, payload, version
+    track = PORT_BLUE if opts["track"] == "portblue" else repo_path(opts["track"]) if opts["track"] else None
+    if track and not track.is_file():
+        sys.exit(f"make-disk: no such track {track}")
+    return fw, out, payload, version, track
 
 
 def main(argv: list[str]) -> int:
@@ -81,8 +92,8 @@ def main(argv: list[str]) -> int:
     prepared = prepare(argv)
     if prepared is None:
         return 0
-    _, out, payload, version = prepared
+    _, out, payload, version, track = prepared
     out.parent.mkdir(parents=True, exist_ok=True)
-    build_image(payload, out)
-    print(f"make-disk: created {out}" + (f" from firmware {version}" if version else ""))
+    build_image(payload, out, track)
+    print(f"make-disk: created {out}" + (f" from firmware {version}" if version else "") + (f" with track {track.name}" if track else ""))
     return 0

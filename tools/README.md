@@ -29,6 +29,10 @@ Run with `uv run --script`; each file declares its own dependencies.
 
 For an `.ipsw`, `make_disk.py` reports the firmware version, read from the `manifest.plist` inside the archive (for example, `2.0.5`). The manifest stores the version as a single number, `VisibleBuildID` (here `0x02058000`), in Apple's classic Mac version format. A number that does not denote a final release is rejected with an error. A bare `Firmware-XX` payload contains no manifest, so no version is reported.
 
+#### Test library
+
+`--track=PATH` (or `portblue`, the shipped fixture `fixtures/portblue.m4a`) also puts a one-track music library on the volume, so a freshly built disk can play. `ipod_library.py` copies `fixtures/ipod_control` (a library libgpod wrote, with its `SysInfo`), places the track in `iPod_Control/Music/F00`, and rewrites the database through libgpod so it carries the checksum the retailOS requires (a hand-patched database lists "No Songs"). The track's title, path, size, length and bitrate come from the file; the artist and album stay those of the fixture. Needs `mtools`, `ffprobe` and `libgpod.so.4`, all in the `qemu-ipod-dev` image.
+
 #### Disk layout
 
 The disk is an empty bootable qcow2 (thin-provisioned), laid out as the retailOS expects:

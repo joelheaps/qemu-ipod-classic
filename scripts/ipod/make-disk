@@ -22,12 +22,13 @@ def run(argv: list[str]) -> int:
     prepared = prepare(argv)
     if prepared is None:
         return 0
-    fw, out, _, _ = prepared
+    fw, out, _, _, track = prepared
     out.parent.mkdir(parents=True, exist_ok=True)
-    mounts = [arg for d in sorted({REPO, fw.parent, out.parent}) for arg in ("-v", f"{d}:{d}")]
+    mounts = [arg for d in sorted({REPO, fw.parent, out.parent, *([track.parent] if track else [])}) for arg in ("-v", f"{d}:{d}")]
     cmd = ["docker", "run", "--rm", "-i", "--user", f"{os.getuid()}:{os.getgid()}", *mounts]
     cmd += ["-e", "MAKE_DISK_IN_CONTAINER=1", "qemu-ipod-dev"]
     cmd += [str(REPO / "scripts/ipod/make-disk"), f"--firmware={fw}", f"--disks={out}"]
+    cmd += [f"--track={track}"] if track else []
     return subprocess.call(cmd)  # noqa: S603
 
 

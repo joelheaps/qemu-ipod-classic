@@ -77,12 +77,13 @@ Besides `ipod:run`, `scripts/ipod/` has one task for preparing a disk (`mise tas
 
 #### `scripts/ipod/make-disk`
 
-Creates an empty bootable disk, thin-provisioned qcow2, for `ipod:run`.
+Creates a bootable disk, thin-provisioned qcow2, for `ipod:run`: empty, or with a one-track library when `--track` is given.
 
 | Flag | Env | Meaning |
 | -- | -- | -- |
 | `--firmware=PATH` | `FIRMWARE` | The firmware to build the disk around |
 | `--disks=PATH` | `DISK` | Disk to create |
+| `--track=PATH` | `TRACK` | Optional: put a one-track library on the disk (`portblue` for the shipped AAC fixture, or any audio file; `tools/README.md`) |
 
 The script behaves as follows:
 
