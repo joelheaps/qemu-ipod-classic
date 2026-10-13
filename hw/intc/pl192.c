@@ -6,9 +6,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
-#include "hw/hw.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/hw-error.h"
 #include "qapi/error.h"
 #include "hw/intc/pl192.h"
 #include "migration/vmstate.h"
@@ -252,7 +252,7 @@ static uint64_t pl192_read(void *opaque, hwaddr offset, unsigned size)
             /*
              * Falling into PL192_VECTADDR means reading this write-only
              * register also acknowledges an interrupt, which looks accidental.
-             * Kept as-is rather than risk changing iPod Touch behaviour.
+             * Kept as-is rather than risk changing behaviour.
              */
             /* fall through */
         case PL192_VECTADDR:
@@ -478,11 +478,11 @@ static const VMStateDescription vmstate_pl192 = {
     },
 };
 
-static void pl192_class_init(ObjectClass *klass, void *data)
+static void pl192_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = pl192_reset;
+    device_class_set_legacy_reset(dc, pl192_reset);
     dc->vmsd = &vmstate_pl192;
 }
 

@@ -10,7 +10,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "migration/vmstate.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/misc/iosb.h"
 #include "trace.h"
 
@@ -81,7 +81,7 @@ static const MemoryRegionOps iosb_mmio_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
 };
 
-static void iosb_reset_hold(Object *obj)
+static void iosb_reset_hold(Object *obj, ResetType type)
 {
     IOSBState *s = IOSB(obj);
 
@@ -105,13 +105,13 @@ static const VMStateDescription vmstate_iosb = {
     .name = "IOSB",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IOSBState, IOSB_REGS),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static void iosb_class_init(ObjectClass *oc, void *data)
+static void iosb_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);

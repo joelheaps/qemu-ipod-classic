@@ -29,7 +29,7 @@
 #include "hw/misc/macio/cuda.h"
 #include "hw/pci/pci.h"
 #include "hw/ppc/mac_dbdma.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/char/escc.h"
 #include "hw/misc/macio/macio.h"
@@ -123,14 +123,17 @@ static bool macio_realize_ide(MacIOState *s, MACIOIDEState *ide,
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(ide);
 
-    sysbus_connect_irq(sbd, 0, irq0);
-    sysbus_connect_irq(sbd, 1, irq1);
     qdev_prop_set_uint32(DEVICE(ide), "channel", dmaid);
     object_property_set_link(OBJECT(ide), "dbdma", OBJECT(&s->dbdma),
                              &error_abort);
     macio_ide_register_dma(ide);
+    if (!qdev_realize(DEVICE(ide), BUS(&s->macio_bus), errp)) {
+        return false;
+    }
+    sysbus_connect_irq(sbd, 0, irq0);
+    sysbus_connect_irq(sbd, 1, irq1);
 
-    return qdev_realize(DEVICE(ide), BUS(&s->macio_bus), errp);
+    return true;
 }
 
 static void macio_oldworld_realize(PCIDevice *d, Error **errp)
@@ -376,13 +379,13 @@ static const VMStateDescription vmstate_macio_oldworld = {
     .name = "macio-oldworld",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj.parent, OldWorldMacIOState),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static void macio_oldworld_class_init(ObjectClass *oc, void *data)
+static void macio_oldworld_class_init(ObjectClass *oc, const void *data)
 {
     PCIDeviceClass *pdc = PCI_DEVICE_CLASS(oc);
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -396,19 +399,18 @@ static const VMStateDescription vmstate_macio_newworld = {
     .name = "macio-newworld",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj.parent, NewWorldMacIOState),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static Property macio_newworld_properties[] = {
+static const Property macio_newworld_properties[] = {
     DEFINE_PROP_BOOL("has-pmu", NewWorldMacIOState, has_pmu, false),
     DEFINE_PROP_BOOL("has-adb", NewWorldMacIOState, has_adb, false),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void macio_newworld_class_init(ObjectClass *oc, void *data)
+static void macio_newworld_class_init(ObjectClass *oc, const void *data)
 {
     PCIDeviceClass *pdc = PCI_DEVICE_CLASS(oc);
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -419,12 +421,11 @@ static void macio_newworld_class_init(ObjectClass *oc, void *data)
     device_class_set_props(dc, macio_newworld_properties);
 }
 
-static Property macio_properties[] = {
+static const Property macio_properties[] = {
     DEFINE_PROP_UINT64("frequency", MacIOState, frequency, 0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void macio_class_init(ObjectClass *klass, void *data)
+static void macio_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -464,7 +465,7 @@ static const TypeInfo macio_type_info = {
     .instance_init = macio_instance_init,
     .abstract      = true,
     .class_init    = macio_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

@@ -24,15 +24,16 @@
 #ifndef BLOCK_IO_H
 #define BLOCK_IO_H
 
-#include "block/aio-wait.h"
+#include "qemu/aiocb.h"
+#include "qemu/aio-wait.h"
 #include "block/block-common.h"
+#include "block/graph-lock.h"
 #include "qemu/coroutine.h"
 #include "qemu/iov.h"
 
 /*
  * I/O API functions. These functions are thread-safe, and therefore
- * can run in any thread as long as the thread has called
- * aio_context_acquire/release().
+ * can run in any thread.
  *
  * These functions can only call functions from I/O and Common categories,
  * but can be invoked by GS, "I/O or GS" and I/O APIs.
@@ -162,6 +163,8 @@ bdrv_is_allocated_above(BlockDriverState *bs, BlockDriverState *base,
 
 int coroutine_fn GRAPH_RDLOCK
 bdrv_co_is_zero_fast(BlockDriverState *bs, int64_t offset, int64_t bytes);
+int coroutine_fn GRAPH_RDLOCK
+bdrv_co_is_all_zeroes(BlockDriverState *bs);
 
 int GRAPH_RDLOCK
 bdrv_apply_auto_read_only(BlockDriverState *bs, const char *errmsg,
@@ -333,11 +336,10 @@ bdrv_co_copy_range(BdrvChild *src, int64_t src_offset,
  * "I/O or GS" API functions. These functions can run without
  * the BQL, but only in one specific iothread/main loop.
  *
- * More specifically, these functions use BDRV_POLL_WHILE(bs), which
- * requires the caller to be either in the main thread and hold
- * the BlockdriverState (bs) AioContext lock, or directly in the
- * home thread that runs the bs AioContext. Calling them from
- * another thread in another AioContext would cause deadlocks.
+ * More specifically, these functions use BDRV_POLL_WHILE(bs), which requires
+ * the caller to be either in the main thread or directly in the home thread
+ * that runs the bs AioContext. Calling them from another thread in another
+ * AioContext would cause deadlocks.
  *
  * Therefore, these functions are not proper I/O, because they
  * can't run in *any* iothreads, but only in a specific one.
@@ -431,7 +433,7 @@ bdrv_drain_poll(BlockDriverState *bs, BdrvChild *ignore_parent,
  *
  * This function can be recursive.
  */
-void bdrv_drained_begin(BlockDriverState *bs);
+void GRAPH_UNLOCKED bdrv_drained_begin(BlockDriverState *bs);
 
 /**
  * bdrv_do_drained_begin_quiesce:

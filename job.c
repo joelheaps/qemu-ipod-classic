@@ -28,7 +28,7 @@
 #include "qemu/job.h"
 #include "qemu/id.h"
 #include "qemu/main-loop.h"
-#include "block/aio-wait.h"
+#include "qemu/aio-wait.h"
 #include "trace/trace-root.h"
 #include "qapi/qapi-events-job.h"
 
@@ -251,6 +251,12 @@ bool job_is_cancelled_locked(Job *job)
     return job->force_cancel;
 }
 
+bool job_is_paused(Job *job)
+{
+    JOB_LOCK_GUARD();
+    return job->paused;
+}
+
 bool job_is_cancelled(Job *job)
 {
     JOB_LOCK_GUARD();
@@ -464,12 +470,8 @@ void job_unref_locked(Job *job)
         assert(!job->txn);
 
         if (job->driver->free) {
-            AioContext *aio_context = job->aio_context;
             job_unlock();
-            /* FIXME: aiocontext lock is required because cb calls blk_unref */
-            aio_context_acquire(aio_context);
             job->driver->free(job);
-            aio_context_release(aio_context);
             job_lock();
         }
 
@@ -627,7 +629,14 @@ static void coroutine_fn job_pause_point_locked(Job *job)
                                     ? JOB_STATUS_STANDBY
                                     : JOB_STATUS_PAUSED);
         job->paused = true;
-        job_do_yield_locked(job, -1);
+        /*
+         * Stay paused across back-to-back pause requests: a transient
+         * paused == false while pause_count > 0 would be observed as
+         * "not paused" by job_set_aio_context() and other drain consumers.
+         */
+        do {
+            job_do_yield_locked(job, -1);
+        } while (job_should_pause_locked(job) && !job_is_cancelled_locked(job));
         job->paused = false;
         job_state_transition_locked(job, status);
     }
@@ -840,12 +849,10 @@ static void job_clean(Job *job)
 
 /*
  * Called with job_mutex held, but releases it temporarily.
- * Takes AioContext lock internally to invoke a job->driver callback.
  */
 static int job_finalize_single_locked(Job *job)
 {
     int job_ret;
-    AioContext *ctx = job->aio_context;
 
     assert(job_is_completed_locked(job));
 
@@ -854,7 +861,6 @@ static int job_finalize_single_locked(Job *job)
 
     job_ret = job->ret;
     job_unlock();
-    aio_context_acquire(ctx);
 
     if (!job_ret) {
         job_commit(job);
@@ -867,7 +873,6 @@ static int job_finalize_single_locked(Job *job)
         job->cb(job->opaque, job_ret);
     }
 
-    aio_context_release(ctx);
     job_lock();
 
     /* Emit events only if we actually started */
@@ -886,17 +891,13 @@ static int job_finalize_single_locked(Job *job)
 
 /*
  * Called with job_mutex held, but releases it temporarily.
- * Takes AioContext lock internally to invoke a job->driver callback.
  */
 static void job_cancel_async_locked(Job *job, bool force)
 {
-    AioContext *ctx = job->aio_context;
     GLOBAL_STATE_CODE();
     if (job->driver->cancel) {
         job_unlock();
-        aio_context_acquire(ctx);
         force = job->driver->cancel(job, force);
-        aio_context_release(ctx);
         job_lock();
     } else {
         /* No .cancel() means the job will behave as if force-cancelled */
@@ -931,7 +932,6 @@ static void job_cancel_async_locked(Job *job, bool force)
 
 /*
  * Called with job_mutex held, but releases it temporarily.
- * Takes AioContext lock internally to invoke a job->driver callback.
  */
 static void job_completed_txn_abort_locked(Job *job)
 {
@@ -979,15 +979,12 @@ static void job_completed_txn_abort_locked(Job *job)
 static int job_prepare_locked(Job *job)
 {
     int ret;
-    AioContext *ctx = job->aio_context;
 
     GLOBAL_STATE_CODE();
 
     if (job->ret == 0 && job->driver->prepare) {
         job_unlock();
-        aio_context_acquire(ctx);
         ret = job->driver->prepare(job);
-        aio_context_release(ctx);
         job_lock();
         job->ret = ret;
         job_update_rc_locked(job);

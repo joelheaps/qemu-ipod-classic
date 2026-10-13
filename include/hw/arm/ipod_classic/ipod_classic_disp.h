@@ -136,7 +136,7 @@
 #ifndef HW_ARM_IPOD_CLASSIC_DISP_H
 #define HW_ARM_IPOD_CLASSIC_DISP_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 #define TYPE_IPOD_CLASSIC_DISP "s5l8702.disp"

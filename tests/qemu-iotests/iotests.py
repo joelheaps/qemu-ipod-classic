@@ -601,11 +601,21 @@ def filter_chown(msg):
     return chown_re.sub("chown UID:GID", msg)
 
 def filter_qmp_event(event):
-    '''Filter a QMP event dict'''
+    '''Filter the timestamp of a QMP event dict'''
     event = dict(event)
     if 'timestamp' in event:
         event['timestamp']['seconds'] = 'SECS'
         event['timestamp']['microseconds'] = 'USECS'
+    return event
+
+def filter_block_job(event):
+    '''Filter the offset and length of a QMP block job event dict'''
+    event = dict(event)
+    if 'data' in event:
+        if 'offset' in event['data']:
+            event['data']['offset'] = 'OFFSET'
+        if 'len' in event['data']:
+            event['data']['len'] = 'LEN'
     return event
 
 def filter_qmp(qmsg, filter_fn):
@@ -651,6 +661,13 @@ def filter_qmp_virtio_scsi(qmsg):
 def filter_generated_node_ids(msg):
     return re.sub("#block[0-9]+", "NODE_NAME", msg)
 
+def filter_qmp_generated_node_ids(qmsg):
+    def _filter(_key, value):
+        if is_str(value):
+            return filter_generated_node_ids(value)
+        return value
+    return filter_qmp(qmsg, _filter)
+
 def filter_img_info(output: str, filename: str,
                     drop_child_info: bool = True) -> str:
     lines = []
@@ -694,6 +711,10 @@ def filter_qmp_imgfmt(qmsg):
 def filter_nbd_exports(output: str) -> str:
     return re.sub(r'((min|opt|max) block): [0-9]+', r'\1: XXX', output)
 
+def filter_qtest(output: str) -> str:
+    output = re.sub(r'^\[I \d+\.\d+\] OPENED\n', '', output)
+    output = re.sub(r'\n?\[I \+\d+\.\d+\] CLOSED\n?$', '', output)
+    return output
 
 Msg = TypeVar('Msg', Dict[str, Any], List[Any], str)
 
@@ -900,6 +921,10 @@ class VM(qtest.QEMUQtestMachine):
     def add_incoming(self, addr):
         self._args.append('-incoming')
         self._args.append(addr)
+        return self
+
+    def add_paused(self):
+        self._args.append('-S')
         return self
 
     def hmp(self, command_line: str, use_log: bool = False) -> QMPMessage:
@@ -1578,6 +1603,22 @@ def skip_if_user_is_root(func):
             return func(*args, **kwargs)
     return func_wrapper
 
+def skip_flaky(bugurl):
+    '''Skip Test Decorator
+       Always skips test due to unreliable design.
+       Requires a bug report URL for historical record.'''
+    def skip_test_decorator(func):
+        def func_wrapper(*args, **kwargs):
+            if os.environ.get("QEMU_TEST_FLAKY_TESTS", None) is None:
+                case_notrun(
+                    ('{}: test is flaky (see {}) and $QEMU_TEST_FLAKY_TESTS ' +
+                     'is not set').format(args[0], bugurl))
+                return None
+            else:
+                return func(*args, **kwargs)
+        return func_wrapper
+    return skip_test_decorator
+
 # We need to filter out the time taken from the output so that
 # qemu-iotest can reliably diff the results against master output,
 # and hide skipped tests from the reference output.
@@ -1607,10 +1648,13 @@ class ReproducibleStreamWrapper:
         self.stream.write(arg)
 
 class ReproducibleTestRunner(unittest.TextTestRunner):
-    def __init__(self, stream: Optional[TextIO] = None,
-                 resultclass: Type[unittest.TestResult] =
-                 ReproducibleTestResult,
-                 **kwargs: Any) -> None:
+    def __init__(
+        self,
+        stream: Optional[TextIO] = None,
+        resultclass: Type[unittest.TextTestResult] =
+        ReproducibleTestResult,
+        **kwargs: Any
+    ) -> None:
         rstream = ReproducibleStreamWrapper(stream or sys.stdout)
         super().__init__(stream=rstream,           # type: ignore
                          descriptions=True,

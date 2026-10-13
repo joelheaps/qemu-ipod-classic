@@ -22,7 +22,5 @@ mkdir -p build && cd build
   --target-list=arm-softmmu --disable-capstone --disable-slirp --extra-cflags=-I/usr/include/openssl \
   --extra-ldflags=-lcrypto --disable-werror --enable-pie; }
 start=$(date +%s)
-ninja qemu-system-arm qemu-img
-# TCG pctrace plugin (contrib Makefile is configure-generated; needs the container's glib)
-make -C contrib/plugins libpctrace.so libprovtrace.so
+ninja qemu-system-arm qemu-img contrib/plugins/libpctrace.so contrib/plugins/libprovtrace.so
 touch -d "@$start" qemu-system-arm qemu-img contrib/plugins/libpctrace.so contrib/plugins/libprovtrace.so

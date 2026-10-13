@@ -13,16 +13,17 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/arm/boot.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "elf.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
+#include "system/physmem.h"
 #include "hw/misc/unimp.h"
-#include "hw/qdev-properties.h"
-#include "sysemu/blockdev.h"
-#include "hw/irq.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/reset.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
+#include "system/blockdev.h"
+#include "hw/core/irq.h"
+#include "system/system.h"
+#include "system/reset.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/dma/pl080.h"
 #include "hw/arm/ipod_classic/ipod_classic.h"
@@ -30,7 +31,8 @@
 #include "hw/arm/ipod_classic/ipod_classic_timer.h"
 /* The S5L8720's SHA-1 block; the S5L8702 drives the same register map. */
 #include "hw/arm/ipod_touch_sha1.h"
-#include "hw/sysbus.h"
+#include "hw/arm/machines-qom.h"
+#include "hw/core/sysbus.h"
 #include "target/arm/cpregs.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
@@ -110,10 +112,10 @@ static void ipod_classic_write_bootinfo(IPodClassicMachineState *nms)
         return;
     }
 
-    cpu_physical_memory_write(S5L8702_BOOTINFO_BASE, zero, sizeof(zero));
-    cpu_physical_memory_write(S5L8702_SYSINFO_BASE, sysinfo, sizeof(sysinfo));
-    cpu_physical_memory_write(S5L8702_BOOTINFO_TAG, &tag, sizeof(tag));
-    cpu_physical_memory_write(S5L8702_BOOTINFO_PTR, &ptr, sizeof(ptr));
+    physical_memory_write(S5L8702_BOOTINFO_BASE, zero, sizeof(zero));
+    physical_memory_write(S5L8702_SYSINFO_BASE, sysinfo, sizeof(sysinfo));
+    physical_memory_write(S5L8702_BOOTINFO_TAG, &tag, sizeof(tag));
+    physical_memory_write(S5L8702_BOOTINFO_PTR, &ptr, sizeof(ptr));
 }
 
 /*
@@ -220,7 +222,7 @@ static void ipod_classic_cpu_reset(void *opaque)
 static void ipod_classic_poke32(hwaddr addr, uint32_t value)
 {
     uint32_t le = cpu_to_le32(value);
-    cpu_physical_memory_write(addr, &le, sizeof(le));
+    physical_memory_write(addr, &le, sizeof(le));
 }
 
 /*
@@ -269,7 +271,7 @@ static void ipod_classic_handoff(IPodClassicMachineState *nms)
 }
 
 static void ipod_classic_machine_reset(MachineState *machine,
-                                       ShutdownCause reason)
+                                       ResetType type)
 {
     /*
      * Reset every device the normal way first -- that includes the timer's own
@@ -279,7 +281,7 @@ static void ipod_classic_machine_reset(MachineState *machine,
      * init has registered ipod_classic_cpu_reset(), so it would otherwise run
      * last. This override is the one place guaranteed to run after all of them.
      */
-    qemu_devices_reset(reason);
+    qemu_devices_reset(type);
     ipod_classic_handoff(IPOD_CLASSIC_MACHINE(machine));
 }
 
@@ -306,7 +308,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
      * MEASURED with SHA1TRACE=1: the SHA-1 engine is handed 0x8ba718c0 and
      * 0x8ba7192c, which are 0x88000000 + 0x03a718c0 and + 0x03a7192c -- offsets
      * comfortably inside 64 MB, i.e. the uncached view of 0x0ba718c0. With
-     * nothing mapped there, cpu_physical_memory_read returned ZEROS and the
+     * nothing mapped there, physical_memory_read returned ZEROS and the
      * engine hashed nothing at all. Any digest the firmware compared against
      * was therefore guaranteed to mismatch, which is what emptied the music
      * library the moment the accelerator was wired up.
@@ -431,7 +433,7 @@ static void ipod_classic_memory_setup(MachineState *machine,
             nms->bootinfo = false;
         } else {
             size = load_image_targphys(machine->kernel_filename,
-                                       SDRAM_MEM_BASE, SDRAM_MEM_SIZE);
+                                       SDRAM_MEM_BASE, SDRAM_MEM_SIZE, NULL);
             if (size < 0) {
                 error_report("could not load \"%s\" at 0x%x",
                              machine->kernel_filename,
@@ -919,12 +921,11 @@ static void ipod_classic_machine_init(MachineState *machine)
      * registers read back.
      *
      * The line itself was checked end to end before a byte of this was
-     * written, because the 5G taught us that raising an IRQ proves nothing
-     * (hw/arm/ipod_video/ipod_video_intc.c, the HI_IRQ gate): VIC0 INTENABLE
+     * written, because raising an IRQ proves nothing on its own: VIC0 INTENABLE
      * reads 0x01A3010F with the machine running, bit 23 set, and the IRAM
      * dispatcher at 0x22004DA0 reads both banks with no cross-condition.
      *
-     * Keys, the same as the iPod-Video machine: q/e turn the wheel, enter is
+     * Keys: q/e turn the wheel, enter is
      * SELECT, w is MENU, a/d are previous/next, s is play. See the header.
      */
     dev = qdev_new(TYPE_IPOD_CLASSIC_WHEEL);
@@ -1093,7 +1094,7 @@ static void ipod_classic_machine_init(MachineState *machine)
     qemu_register_reset(ipod_classic_cpu_reset, nms);
 }
 
-static void ipod_classic_machine_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_machine_class_init(ObjectClass *klass, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
@@ -1111,6 +1112,7 @@ static const TypeInfo ipod_classic_machine_info = {
     .class_size    = sizeof(IPodClassicMachineClass),
     .class_init    = ipod_classic_machine_class_init,
     .instance_init = ipod_classic_instance_init,
+    .interfaces    = arm_machine_interfaces,
 };
 
 static void ipod_classic_machine_types(void)

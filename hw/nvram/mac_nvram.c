@@ -27,14 +27,15 @@
 #include "qapi/error.h"
 #include "hw/nvram/chrp_nvram.h"
 #include "hw/nvram/mac_nvram.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "sysemu/block-backend.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "system/block-backend.h"
 #include "migration/vmstate.h"
 #include "qemu/cutils.h"
 #include "qemu/module.h"
+#include "qemu/error-report.h"
 #include "trace.h"
-#include <zlib.h>
+#include <zlib.h> /* for adler32 */
 
 #define DEF_SYSTEM_SIZE 0xc10
 
@@ -48,7 +49,10 @@ static void macio_nvram_writeb(void *opaque, hwaddr addr,
     trace_macio_nvram_write(addr, value);
     s->data[addr] = value;
     if (s->blk) {
-        blk_pwrite(s->blk, addr, 1, &s->data[addr], 0);
+        if (blk_pwrite(s->blk, addr, 1, &s->data[addr], 0) < 0) {
+            error_report("%s: write of NVRAM data to backing store failed",
+                         blk_name(s->blk));
+        }
     }
 }
 
@@ -79,7 +83,7 @@ static const VMStateDescription vmstate_macio_nvram = {
     .name = "macio_nvram",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VBUFFER_UINT32(data, MacIONVRAMState, 0, NULL, size),
         VMSTATE_END_OF_LIST()
     }
@@ -130,20 +134,19 @@ static void macio_nvram_unrealizefn(DeviceState *dev)
     g_free(s->data);
 }
 
-static Property macio_nvram_properties[] = {
+static const Property macio_nvram_properties[] = {
     DEFINE_PROP_UINT32("size", MacIONVRAMState, size, 0),
     DEFINE_PROP_UINT32("it_shift", MacIONVRAMState, it_shift, 0),
     DEFINE_PROP_DRIVE("drive", MacIONVRAMState, blk),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void macio_nvram_class_init(ObjectClass *oc, void *data)
+static void macio_nvram_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = macio_nvram_realizefn;
     dc->unrealize = macio_nvram_unrealizefn;
-    dc->reset = macio_nvram_reset;
+    device_class_set_legacy_reset(dc, macio_nvram_reset);
     dc->vmsd = &vmstate_macio_nvram;
     device_class_set_props(dc, macio_nvram_properties);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);

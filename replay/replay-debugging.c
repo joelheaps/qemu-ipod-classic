@@ -11,13 +11,13 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "sysemu/replay.h"
-#include "sysemu/runstate.h"
+#include "system/replay.h"
+#include "system/runstate.h"
 #include "replay-internal.h"
 #include "monitor/hmp.h"
 #include "monitor/monitor.h"
 #include "qapi/qapi-commands-replay.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu/timer.h"
 #include "block/snapshot.h"
 #include "migration/snapshot.h"
@@ -139,29 +139,28 @@ static char *replay_find_nearest_snapshot(int64_t icount,
                                           int64_t *snapshot_icount)
 {
     BlockDriverState *bs;
-    QEMUSnapshotInfo *sn_tab;
+    g_autofree QEMUSnapshotInfo *sn_tab = NULL;
     QEMUSnapshotInfo *nearest = NULL;
-    char *ret = NULL;
     int rv;
     int nb_sns, i;
-    AioContext *aio_context;
 
     *snapshot_icount = -1;
 
     bs = bdrv_all_find_vmstate_bs(NULL, false, NULL, NULL);
     if (!bs) {
-        goto fail;
+        return NULL;
     }
-    aio_context = bdrv_get_aio_context(bs);
 
-    aio_context_acquire(aio_context);
     nb_sns = bdrv_snapshot_list(bs, &sn_tab);
-    aio_context_release(aio_context);
+    if (nb_sns < 0) {
+        return NULL;
+    }
 
     for (i = 0; i < nb_sns; i++) {
         rv = bdrv_all_has_snapshot(sn_tab[i].name, false, NULL, NULL);
-        if (rv < 0)
-            goto fail;
+        if (rv < 0) {
+            return NULL;
+        }
         if (rv == 1) {
             if (sn_tab[i].icount != -1ULL
                 && sn_tab[i].icount <= icount
@@ -170,14 +169,12 @@ static char *replay_find_nearest_snapshot(int64_t icount,
             }
         }
     }
-    if (nearest) {
-        ret = g_strdup(nearest->name);
-        *snapshot_icount = nearest->icount;
+    if (!nearest) {
+        return NULL;
     }
-    g_free(sn_tab);
 
-fail:
-    return ret;
+    *snapshot_icount = nearest->icount;
+    return g_strdup(nearest->name);
 }
 
 static void replay_seek(int64_t icount, QEMUTimerCB callback, Error **errp)

@@ -17,13 +17,13 @@
 #ifndef HW_MISC_XLNX_VERSAL_CFRAME_REG_H
 #define HW_MISC_XLNX_VERSAL_CFRAME_REG_H
 
-#include "hw/sysbus.h"
-#include "hw/register.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/register.h"
 #include "hw/misc/xlnx-cfi-if.h"
 #include "hw/misc/xlnx-versal-cfu.h"
 #include "qemu/fifo32.h"
 
-#define TYPE_XLNX_VERSAL_CFRAME_REG "xlnx,cframe-reg"
+#define TYPE_XLNX_VERSAL_CFRAME_REG "xlnx-cframe-reg"
 OBJECT_DECLARE_SIMPLE_TYPE(XlnxVersalCFrameReg, XLNX_VERSAL_CFRAME_REG)
 
 #define TYPE_XLNX_VERSAL_CFRAME_BCAST_REG "xlnx.cframe-bcast-reg"

@@ -21,11 +21,9 @@
 #define ALPHA_CPU_H
 
 #include "cpu-qom.h"
-#include "exec/cpu-defs.h"
+#include "exec/cpu-common.h"
+#include "exec/cpu-interrupt.h"
 #include "qemu/cpu-float.h"
-
-/* Alpha processors have a weak memory model */
-#define TCG_GUEST_DEFAULT_MO      (0)
 
 #define ICACHE_LINE_SIZE 32
 #define DCACHE_LINE_SIZE 32
@@ -270,7 +268,6 @@ struct ArchCPU {
 /**
  * AlphaCPUClass:
  * @parent_realize: The parent class' realize handler.
- * @parent_reset: The parent class' reset handler.
  *
  * An Alpha CPU model.
  */
@@ -278,7 +275,6 @@ struct AlphaCPUClass {
     CPUClass parent_class;
 
     DeviceRealize parent_realize;
-    DeviceReset parent_reset;
 };
 
 #ifndef CONFIG_USER_ONLY
@@ -286,15 +282,11 @@ extern const VMStateDescription vmstate_alpha_cpu;
 
 void alpha_cpu_do_interrupt(CPUState *cpu);
 bool alpha_cpu_exec_interrupt(CPUState *cpu, int int_req);
-hwaddr alpha_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
+hwaddr alpha_cpu_get_phys_addr_debug(CPUState *cpu, vaddr addr);
 #endif /* !CONFIG_USER_ONLY */
 void alpha_cpu_dump_state(CPUState *cs, FILE *f, int flags);
 int alpha_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 int alpha_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
-
-#define cpu_list alpha_cpu_list
-
-#include "exec/cpu-all.h"
 
 enum {
     FEATURE_ASN    = 0x00000001,
@@ -318,9 +310,9 @@ enum {
 };
 
 /* Alpha-specific interrupt pending bits.  */
-#define CPU_INTERRUPT_TIMER	CPU_INTERRUPT_TGT_EXT_0
-#define CPU_INTERRUPT_SMP	CPU_INTERRUPT_TGT_EXT_1
-#define CPU_INTERRUPT_MCHK	CPU_INTERRUPT_TGT_EXT_2
+#define CPU_INTERRUPT_TIMER     CPU_INTERRUPT_TGT_EXT_0
+#define CPU_INTERRUPT_SMP       CPU_INTERRUPT_TGT_EXT_1
+#define CPU_INTERRUPT_MCHK      CPU_INTERRUPT_TGT_EXT_2
 
 /* OSF/1 Page table bits.  */
 enum {
@@ -391,7 +383,7 @@ enum {
 
 #define TB_FLAG_UNALIGN       (1u << 1)
 
-static inline int cpu_mmu_index(CPUAlphaState *env, bool ifetch)
+static inline int alpha_env_mmu_index(CPUAlphaState *env)
 {
     int ret = env->flags & ENV_FLAG_PS_USER ? MMU_USER_IDX : MMU_KERNEL_IDX;
     if (env->flags & ENV_FLAG_PAL_MODE) {
@@ -438,10 +430,11 @@ enum {
 };
 
 void alpha_translate_init(void);
+void alpha_translate_code(CPUState *cs, TranslationBlock *tb,
+                          int *max_insns, vaddr pc, void *host_pc);
 
 #define CPU_RESOLVING_TYPE TYPE_ALPHA_CPU
 
-void alpha_cpu_list(void);
 G_NORETURN void dynamic_excp(CPUAlphaState *, uintptr_t, int, int);
 G_NORETURN void arith_excp(CPUAlphaState *, uintptr_t, int, uint64_t);
 
@@ -469,17 +462,6 @@ void alpha_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
                                      int mmu_idx, MemTxAttrs attrs,
                                      MemTxResult response, uintptr_t retaddr);
 #endif
-
-static inline void cpu_get_tb_cpu_state(CPUAlphaState *env, vaddr *pc,
-                                        uint64_t *cs_base, uint32_t *pflags)
-{
-    *pc = env->pc;
-    *cs_base = 0;
-    *pflags = env->flags & ENV_FLAG_TB_MASK;
-#ifdef CONFIG_USER_ONLY
-    *pflags |= TB_FLAG_UNALIGN * !env_cpu(env)->prctl_unalign_sigbus;
-#endif
-}
 
 #ifdef CONFIG_USER_ONLY
 /* Copied from linux ieee_swcr_to_fpcr.  */

@@ -24,10 +24,11 @@
 
 #include "qemu/osdep.h"
 #include "monitor/hmp.h"
+#include "monitor/hmp-completion.h"
 #include "monitor/monitor.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-trace.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "trace/control.h"
 #ifdef CONFIG_TRACE_SIMPLE
 #include "trace/simple.h"
@@ -40,7 +41,7 @@ void hmp_trace_event(Monitor *mon, const QDict *qdict)
     Error *local_err = NULL;
 
     qmp_trace_event_set_state(tp_name, new_state,
-                              true, true, false, 0, &local_err);
+                              true, true, &local_err);
     if (local_err) {
         error_report_err(local_err);
     }
@@ -82,7 +83,7 @@ void hmp_info_trace_events(Monitor *mon, const QDict *qdict)
         name = "*";
     }
 
-    events = qmp_trace_event_get_state(name, false, 0, &local_err);
+    events = qmp_trace_event_get_state(name, &local_err);
     if (local_err) {
         error_report_err(local_err);
         return;

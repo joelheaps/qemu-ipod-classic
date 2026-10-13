@@ -26,22 +26,23 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "qapi/error.h"
 #include "trace.h"
 #include "qemu/timer.h"
 #include "hw/ppc/xics.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qapi/visitor.h"
 #include "migration/vmstate.h"
-#include "monitor/monitor.h"
 #include "hw/intc/intc.h"
-#include "hw/irq.h"
-#include "sysemu/kvm.h"
-#include "sysemu/reset.h"
+#include "hw/core/irq.h"
+#include "system/kvm.h"
+#include "system/reset.h"
+#include "target/ppc/cpu.h"
 
-void icp_pic_print_info(ICPState *icp, Monitor *mon)
+void icp_pic_print_info(ICPState *icp, GString *buf)
 {
     int cpu_index;
 
@@ -62,17 +63,17 @@ void icp_pic_print_info(ICPState *icp, Monitor *mon)
         icp_synchronize_state(icp);
     }
 
-    monitor_printf(mon, "CPU %d XIRR=%08x (%p) PP=%02x MFRR=%02x\n",
-                   cpu_index, icp->xirr, icp->xirr_owner,
-                   icp->pending_priority, icp->mfrr);
+    g_string_append_printf(buf, "CPU %d XIRR=%08x (%p) PP=%02x MFRR=%02x\n",
+                           cpu_index, icp->xirr, icp->xirr_owner,
+                           icp->pending_priority, icp->mfrr);
 }
 
-void ics_pic_print_info(ICSState *ics, Monitor *mon)
+void ics_pic_print_info(ICSState *ics, GString *buf)
 {
     uint32_t i;
 
-    monitor_printf(mon, "ICS %4x..%4x %p\n",
-                   ics->offset, ics->offset + ics->nr_irqs - 1, ics);
+    g_string_append_printf(buf, "ICS %4x..%4x %p\n",
+                           ics->offset, ics->offset + ics->nr_irqs - 1, ics);
 
     if (!ics->irqs) {
         return;
@@ -88,11 +89,11 @@ void ics_pic_print_info(ICSState *ics, Monitor *mon)
         if (!(irq->flags & XICS_FLAGS_IRQ_MASK)) {
             continue;
         }
-        monitor_printf(mon, "  %4x %s %02x %02x\n",
-                       ics->offset + i,
-                       (irq->flags & XICS_FLAGS_IRQ_LSI) ?
-                       "LSI" : "MSI",
-                       irq->priority, irq->status);
+        g_string_append_printf(buf, "  %4x %s %02x %02x\n",
+                               ics->offset + i,
+                               (irq->flags & XICS_FLAGS_IRQ_LSI) ?
+                               "LSI" : "MSI",
+                               irq->priority, irq->status);
     }
 }
 
@@ -222,6 +223,13 @@ void icp_irq(ICSState *ics, int server, int nr, uint8_t priority)
 
     trace_xics_icp_irq(server, nr, priority);
 
+    if (!icp) {
+        qemu_log_mask(LOG_GUEST_ERROR, "XICS: invalid server %d for IRQ 0x%x\n",
+                      server, nr);
+        ics_reject(ics, nr);
+        return;
+    }
+
     if ((priority >= CPPR(icp))
         || (XISR(icp) && (icp->pending_priority <= priority))) {
         ics_reject(ics, nr);
@@ -273,7 +281,7 @@ static const VMStateDescription vmstate_icp_server = {
     .minimum_version_id = 1,
     .pre_save = icp_pre_save,
     .post_load = icp_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /* Sanity check */
         VMSTATE_UINT32(xirr, ICPState),
         VMSTATE_UINT8(pending_priority, ICPState),
@@ -335,22 +343,8 @@ static void icp_realize(DeviceState *dev, Error **errp)
             return;
         }
     }
-    /*
-     * The way that pre_2_10_icp is handling is really, really hacky.
-     * We used to have here this call:
-     *
-     * vmstate_register(NULL, icp->cs->cpu_index, &vmstate_icp_server, icp);
-     *
-     * But we were doing:
-     *     pre_2_10_vmstate_register_dummy_icp()
-     *     this vmstate_register()
-     *     pre_2_10_vmstate_unregister_dummy_icp()
-     *
-     * So for a short amount of time we had to vmstate entries with
-     * the same name.  This fixes it.
-     */
-    vmstate_replace_hack_for_ppc(NULL, icp->cs->cpu_index,
-                                 &vmstate_icp_server, icp);
+
+    vmstate_register(NULL, icp->cs->cpu_index, &vmstate_icp_server, icp);
 }
 
 static void icp_unrealize(DeviceState *dev)
@@ -360,14 +354,13 @@ static void icp_unrealize(DeviceState *dev)
     vmstate_unregister(NULL, &vmstate_icp_server, icp);
 }
 
-static Property icp_properties[] = {
+static const Property icp_properties[] = {
     DEFINE_PROP_LINK(ICP_PROP_XICS, ICPState, xics, TYPE_XICS_FABRIC,
                      XICSFabric *),
     DEFINE_PROP_LINK(ICP_PROP_CPU, ICPState, cs, TYPE_CPU, CPUState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void icp_class_init(ObjectClass *klass, void *data)
+static void icp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -578,7 +571,7 @@ static void ics_reset_irq(ICSIRQState *irq)
     irq->saved_priority = 0xff;
 }
 
-static void ics_reset_hold(Object *obj)
+static void ics_reset_hold(Object *obj, ResetType type)
 {
     ICSState *ics = ICS(obj);
     g_autofree uint8_t *flags = g_malloc(ics->nr_irqs);
@@ -665,7 +658,7 @@ static const VMStateDescription vmstate_ics_irq = {
     .name = "ics/irq",
     .version_id = 2,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(server, ICSIRQState),
         VMSTATE_UINT8(priority, ICSIRQState),
         VMSTATE_UINT8(saved_priority, ICSIRQState),
@@ -681,9 +674,9 @@ static const VMStateDescription vmstate_ics = {
     .minimum_version_id = 1,
     .pre_save = ics_pre_save,
     .post_load = ics_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /* Sanity check */
-        VMSTATE_UINT32_EQUAL(nr_irqs, ICSState, NULL),
+        VMSTATE_UINT32_EQUAL(nr_irqs, ICSState),
 
         VMSTATE_STRUCT_VARRAY_POINTER_UINT32(irqs, ICSState, nr_irqs,
                                              vmstate_ics_irq,
@@ -692,14 +685,13 @@ static const VMStateDescription vmstate_ics = {
     },
 };
 
-static Property ics_properties[] = {
+static const Property ics_properties[] = {
     DEFINE_PROP_UINT32("nr-irqs", ICSState, nr_irqs, 0),
     DEFINE_PROP_LINK(ICS_PROP_XICS, ICSState, xics, TYPE_XICS_FABRIC,
                      XICSFabric *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void ics_class_init(ObjectClass *klass, void *data)
+static void ics_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

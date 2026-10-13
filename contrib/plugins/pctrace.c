@@ -21,11 +21,11 @@
  * plugin.  The MMU maps runtime VA = physical - 0xAF98; pctrace's `pc=`/
  * `regpc=`/`memw=` all use that runtime VA, verified against gdb (stocktrace).
  *
- * Build:   (from the QEMU build dir)
- *   make -C contrib/plugins pctrace        # or: cd build/contrib/plugins && make
+ * Build:   (from the top of a configured build tree)
+ *   ninja contrib/plugins/libpctrace.so
  * Use:
  *   qemu-system-arm -M iPod-Classic ... \
- *     -plugin contrib/plugins/libpctrace.so,out=/home/you/6g/pc.log
+ *     -plugin build/contrib/plugins/libpctrace.so,out=/home/you/6g/pc.log
  * Optional args (comma-separated after the .so path):
  *   out=PATH        write trace to PATH (default: stderr, captured like DISPTRACE)
  *   window=MS       ms a trigger keeps per-hit logging open (default 800)
@@ -44,7 +44,7 @@
  *   loud=0xADDR     undo quiet for a PC (emit per-hit lines again)
  *   nodefault=on    do not install the built-in PC table (only pc=/trig= args)
  *
- * REGISTER READ (8.2 backport of qemu_plugin_read_register -- see plugins/api.c):
+ * REGISTER READ (via qemu_plugin_get_registers() register handles):
  *   regpc=0xADDR:LABEL          at ADDR log LR + r0..r3 + sp of the guest, every
  *                               hit (capped). Use this first to DISCOVER which
  *                               argument register carries a value: e.g. arm it
@@ -86,14 +86,13 @@
  *                               huge memset). NB memw also sees the one-shot boot
  *                               relocation stores (first ~200 ms) into the image gap.
  *
- *   CORRECTNESS: 8.2 discards callback cb-flags and emits the callback helper
- *   TCG_CALL_NO_RWG, so the guest register file is only authoritative at a TB
- *   boundary. This plugin therefore only reads registers when ADDR is the FIRST
- *   instruction of its translation block. A branch target is NOT necessarily a
- *   TB head: the same PC reached by fall-through from the previous insn is
- *   mid-TB, so some hits can be unreadable. regpc/sendex/memr all count such
- *   mid-TB hits, refuse the (unreliable) read, and warn once per PC (also shown
- *   as [mid-TB skipped=N] in the summary); hits/matches are then undercounts.
+ *   CORRECTNESS: this plugin conservatively reads registers only when ADDR is
+ *   the FIRST instruction of its translation block, where env holds the exact
+ *   architectural register file. A branch target is NOT necessarily a TB head:
+ *   the same PC reached by fall-through from the previous insn is mid-TB, so
+ *   some hits can be unreadable. regpc/sendex/memr all count such mid-TB hits,
+ *   refuse the read, and warn once per PC (also shown as [mid-TB skipped=N] in
+ *   the summary); hits/matches are then undercounts.
  *
  * License: GNU GPL, version 2 or later (see COPYING).
  */
@@ -163,8 +162,8 @@ static guint win_gen;               /* bumped each time a trigger opens the wind
  * desyncs the click-wheel latch). Always-on (not window-gated): the decode task
  * runs asynchronously, off the keypress window. Capped so a memcpy loop cannot
  * flood the log; the count keeps rising past the cap so the summary is honest.
- * QEMU 8.2's plugin API cannot read the stored value, so the value is confirmed
- * out-of-band (AUDIOWAV RMS, or an xp of the buffer once a writer PC is known).
+ * The stored value is not read here, so it is confirmed out-of-band (AUDIOWAV
+ * RMS, or an xp of the buffer once a writer PC is known).
  */
 static uint64_t memw_lo, memw_hi;   /* [lo,hi); hi==0 disables mem watch */
 static guint64 memw_cap = 400;      /* max logged store lines */
@@ -180,9 +179,9 @@ static GArray *memw_skip;           /* uint64 PCs: counted, never logged */
  * callback on every instruction), this only fires at the one PC, so it is cheap
  * enough to leave on during sustained playback. It answers "where does this copy
  * write?" -- e.g. does the audio copy 0x08016eb4 target the DMA ping-pong, and
- * does its target move when the SM1 position advances? The stored VALUE is still
- * not readable under the 8.2 plugin API, but the address is what locates a
- * buffer. Capped per PC so a copy loop cannot flood the log.
+ * does its target move when the SM1 position advances? The stored value is not
+ * read here, but the address is what locates a buffer. Capped per PC so a copy
+ * loop cannot flood the log.
  */
 typedef struct {
     uint64_t pc;
@@ -194,10 +193,10 @@ static GArray *memwpc;              /* array of MemwPC */
 static guint64 memwpc_cap = 40;     /* max logged lines per watched PC */
 
 /*
- * REGISTER READ (8.2 backport). regpc=/sendex= install an insn-exec callback on
- * a PC that is the FIRST instruction of a TB and read the guest GPRs there with
- * qemu_plugin_read_register(). At a TB head env holds the exact architectural
- * register file (§ plugins/api.c), so LR = caller return address and r0..r3 =
+ * REGISTER READ. regpc=/sendex= install an insn-exec callback on a PC that is
+ * the FIRST instruction of a TB and read the guest GPRs there through register
+ * handles obtained from qemu_plugin_get_registers(). At a TB head env holds the
+ * exact architectural register file, so LR = caller return address and r0..r3 =
  * the primitive's arguments are captured non-invasively -- no gdb, no CPU halt,
  * no watchpoint on the hot kernel data page 0x0897xxxx. sendex= additionally
  * gates logging on one register equalling WANT (the exchange index == 6), so it
@@ -299,12 +298,44 @@ static void print_mem_value(FILE *f, const guint8 *p, guint len)
     }
 }
 
+/*
+ * Guest core registers, keyed by the gdb core-register index used on the
+ * pctrace command line (0..12=r0..r12, 13=sp, 14=lr, 15=pc). Upstream exposes
+ * opaque register handles via qemu_plugin_get_registers(), so resolve each
+ * index to its handle once at vCPU init (a vCPU callback is required).
+ */
+#define N_CORE_REGS 16
+static struct qemu_plugin_register *core_reg[N_CORE_REGS];
+static const char *const core_reg_names[N_CORE_REGS] = {
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
+    "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc",
+};
+
+static void vcpu_init(unsigned int cpu_index, void *userdata)
+{
+    g_autoptr(GArray) regs = qemu_plugin_get_registers();
+
+    for (guint i = 0; i < regs->len; i++) {
+        qemu_plugin_reg_descriptor *rd =
+            &g_array_index(regs, qemu_plugin_reg_descriptor, i);
+        for (int r = 0; r < N_CORE_REGS; r++) {
+            if (!core_reg[r] && !g_strcmp0(rd->name, core_reg_names[r])) {
+                core_reg[r] = rd->handle;
+            }
+        }
+    }
+}
+
 /* Read a 32-bit guest core register by gdb index. iPod ARM is little-endian. */
 static bool read_reg32(int reg, uint32_t *out)
 {
+    struct qemu_plugin_register *handle;
+
+    if (reg < 0 || reg >= N_CORE_REGS || !(handle = core_reg[reg])) {
+        return false;
+    }
     g_byte_array_set_size(reg_buf, 0);
-    int n = qemu_plugin_read_register(reg_buf, reg);
-    if (n < 4) {
+    if (!qemu_plugin_read_register(handle, reg_buf) || reg_buf->len < 4) {
         return false;
     }
     *out = (uint32_t)reg_buf->data[0] |
@@ -629,12 +660,13 @@ static void vcpu_audump_mid(unsigned int cpu_index, void *udata)
     if (!ad->mid_warned) {
         ad->mid_warned = true;
         fprintf(out, "PCTRACE WARNING: audump pc=0x%08" PRIx64 " seen mid-TB; "
-                "dump skipped (env unreliable off a TB head in 8.2)\n", ad->pc);
+                "dump skipped (register reads are only taken at a TB head)\n",
+                ad->pc);
         fflush(out);
     }
 }
 
-/* Mid-TB sighting: env is NOT authoritative here (8.2), so refuse to read. */
+/* Mid-TB sighting: register reads are only taken at a TB head, so refuse. */
 static void vcpu_regpc_mid(unsigned int cpu_index, void *udata)
 {
     RegPC *rp = (RegPC *)udata;
@@ -642,7 +674,8 @@ static void vcpu_regpc_mid(unsigned int cpu_index, void *udata)
     if (!rp->mid_warned) {
         rp->mid_warned = true;
         fprintf(out, "PCTRACE WARNING: %s pc=0x%08" PRIx64 " seen mid-TB; "
-                "register read skipped (env unreliable off a TB head in 8.2)\n",
+                "register read skipped (register reads are only taken at a TB "
+                "head)\n",
                 rp->label, rp->pc);
         fflush(out);
     }
@@ -662,7 +695,7 @@ static MemwPC *find_memwpc(uint64_t pc)
     return NULL;
 }
 
-static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+static void vcpu_tb_trans(struct qemu_plugin_tb *tb, void *userdata)
 {
     size_t n = qemu_plugin_tb_n_insns(tb);
     for (size_t i = 0; i < n; i++) {
@@ -707,7 +740,7 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
     }
 }
 
-static void plugin_exit(qemu_plugin_id_t id, void *p)
+static void plugin_exit(void *p)
 {
     fprintf(out, "\n=== PCTRACE summary (hit counts, run to run) ===\n");
     for (guint i = 0; i < watch->len; i++) {
@@ -1021,7 +1054,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     }
     fflush(out);
 
-    qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
+    qemu_plugin_register_vcpu_init_cb(id, vcpu_init, NULL);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans, NULL);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
     return 0;
 }

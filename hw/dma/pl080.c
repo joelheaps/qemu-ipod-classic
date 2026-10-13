@@ -8,14 +8,13 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/dma/pl080.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 
 #define PL080_CONF_E    0x1
@@ -39,7 +38,7 @@ static const VMStateDescription vmstate_pl080_channel = {
     .name = "pl080_channel",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(src, pl080_channel),
         VMSTATE_UINT32(dest, pl080_channel),
         VMSTATE_UINT32(lli, pl080_channel),
@@ -53,7 +52,7 @@ static const VMStateDescription vmstate_pl080 = {
     .name = "pl080",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(tc_int, PL080State),
         VMSTATE_UINT8(tc_mask, PL080State),
         VMSTATE_UINT8(err_int, PL080State),
@@ -131,9 +130,11 @@ static void pl080_update(PL080State *s)
  * (src @ +0, dest @ +4, next-link @ +8, control @ +12). This is exactly the
  * fetch the controller does at an LLI boundary; factored out so the terminal
  * relink path (pl080_write) and the mid-run boundary (pl080_run) stay identical.
+ * The descriptor address is 4-byte aligned, as upstream requires.
  */
 static void pl080_ch_load_lli(PL080State *s, pl080_channel *ch, uint32_t lli)
 {
+    lli &= ~3;
     ch->src  = address_space_ldl_le(&s->downstream_as, lli,
                                     MEMTXATTRS_UNSPECIFIED, NULL);
     ch->dest = address_space_ldl_le(&s->downstream_as, lli + 4,
@@ -158,6 +159,7 @@ static void pl080_run(PL080State *s)
     int size;
     uint8_t buff[4];
     uint32_t req;
+    uint32_t next_lli;
 
     s->tc_mask = 0;
     for (c = 0; c < s->nchannels; c++) {
@@ -199,8 +201,9 @@ again:
             }
             flow = (ch->conf >> 11) & 7;
             if (flow >= 4) {
-                hw_error(
-                    "pl080_run: Peripheral flow control not implemented\n");
+                qemu_log_mask(LOG_UNIMP,
+                              "pl080_run: Peripheral flow control not implemented\n");
+                continue;
             }
             src_id = (ch->conf >> 1) & 0x1f;
             dest_id = (ch->conf >> 6) & 0x1f;
@@ -236,9 +239,8 @@ again:
                     size = 0;
                 break;
             }
-            if (!size) {
+            if (!size)
                 continue;
-            }
 
             /* Transfer one element.  */
             /* ??? Should transfer multiple elements for a burst request.  */
@@ -246,28 +248,48 @@ again:
                destination widths are different.  */
             swidth = 1 << ((ch->ctrl >> 18) & 7);
             dwidth = 1 << ((ch->ctrl >> 21) & 7);
-            for (n = 0; n < dwidth; n+= swidth) {
+
+            /* Only widths of 1, 2 or 4 are valid */
+            if (swidth > 4) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "pl080: channel %d: invalid SWidth %d\n",
+                              c, extract32(ch->ctrl, 18, 3));
+                continue;
+            }
+            if (dwidth > 4) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "pl080: channel %d: invalid DWidth %d\n",
+                              c, extract32(ch->ctrl, 21, 3));
+                continue;
+            }
+            if ((size * swidth) % dwidth) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                    "pl080: channel %d: transfer size mismatch: size=%d swidth=%d dwidth=%d\n",
+                    c, size, swidth, dwidth);
+                continue;
+            }
+            xsize = MAX(swidth, dwidth);
+            for (n = 0; n < xsize; n += swidth) {
                 address_space_read(&s->downstream_as, ch->src,
                                    MEMTXATTRS_UNSPECIFIED, buff + n, swidth);
                 if (ch->ctrl & PL080_CCTRL_SI)
                     ch->src += swidth;
             }
-            xsize = (dwidth < swidth) ? swidth : dwidth;
             /* ??? This may pad the value incorrectly for dwidth < 32.  */
             for (n = 0; n < xsize; n += dwidth) {
-                address_space_write(&s->downstream_as, ch->dest + n,
+                address_space_write(&s->downstream_as, ch->dest,
                                     MEMTXATTRS_UNSPECIFIED, buff + n, dwidth);
                 if (ch->ctrl & PL080_CCTRL_DI)
-                    ch->dest += swidth;
+                    ch->dest += dwidth;
             }
 
-            //printf("Transfer size: %d, destination: 0x%08x\n", size, ch->dest);
-            size--;
+            size -= xsize / swidth;
             ch->ctrl = (ch->ctrl & 0xfffff000) | size;
             if (size == 0) {
                 /* Transfer complete.  */
-                if (ch->lli) {
-                    pl080_ch_load_lli(s, ch, ch->lli);
+                next_lli = (ch->lli & ~3);
+                if (next_lli) {
+                    pl080_ch_load_lli(s, ch, next_lli);
                 } else if (s->paced_lines & ((1u << dest_id) | (1u << src_id))) {
                     /*
                      * Terminal LLI (no link) on a PACED channel. Do NOT clear
@@ -287,7 +309,7 @@ again:
                      * when the guest explicitly aborts (writes CONFIG.E=0). This
                      * removes the race for ANY relative timing: a late relink now
                      * costs at most a brief underrun, never a panic. Non-paced
-                     * channels (all retailOS/5G DMA, and everything when AUDIOPACE
+                     * channels (all retailOS DMA, and everything when AUDIOPACE
                      * is off) keep the exact stock auto-disable below.
                      */
                     s->paced_pending |= (1u << c);
@@ -295,7 +317,6 @@ again:
                     ch->conf &= ~PL080_CCONF_E;
                 }
                 if (ch->ctrl & PL080_CCTRL_I) {
-                    //printf("Setting interrupt status of channel %d\n", c);
                     s->tc_int |= 1 << c;
                     if (pl080_trace_on()) {
                         s->tc_count[c]++;
@@ -468,19 +489,15 @@ static void pl080_write(void *opaque, hwaddr offset,
     PL080State *s = (PL080State *)opaque;
     int i;
 
-    //fprintf(stderr, "%s: writing 0x%08x to 0x%08x\n", __func__, value, offset);
-
     if (offset >= 0x100 && offset < 0x200) {
         i = (offset & 0xe0) >> 5;
         if (i >= s->nchannels)
             goto bad_offset;
         switch ((offset >> 2) & 7) {
         case 0: /* SrcAddr */
-            //printf("%s: setting source address of channel %d to 0x%08x\n", __func__, i, value);
             s->chan[i].src = value;
             break;
         case 1: /* DestAddr */
-            //printf("%s: setting destination address of channel %d to 0x%08x\n", __func__, i, value);
             s->chan[i].dest = value;
             break;
         case 2: /* LLI */
@@ -499,7 +516,6 @@ static void pl080_write(void *opaque, hwaddr offset,
              */
             break;
         case 3: /* Control */
-            //printf("%s: setting control of channel %d to 0x%08x (transfer size: %d)\n", __func__, i, value, value & 0xfff);
             s->chan[i].ctrl = value;
             /* A fresh descriptor with real work clears any completed-pending
                state (e.g. dmac_ch_run starting a new task). */
@@ -508,7 +524,6 @@ static void pl080_write(void *opaque, hwaddr offset,
             }
             break;
         case 4: /* Configuration */
-            //printf("%s: setting configuration of channel %d to 0x%08x\n", __func__, i, value);
             if (!(value & PL080_CCONF_E)) {
                 /* Explicit disable/abort resolves the completed-pending state. */
                 s->paced_pending &= ~(1u << i);
@@ -628,20 +643,19 @@ static void pl081_init(Object *obj)
     s->nchannels = 2;
 }
 
-static Property pl080_properties[] = {
+static const Property pl080_properties[] = {
     DEFINE_PROP_LINK("downstream", PL080State, downstream,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void pl080_class_init(ObjectClass *oc, void *data)
+static void pl080_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->vmsd = &vmstate_pl080;
     dc->realize = pl080_realize;
     device_class_set_props(dc, pl080_properties);
-    dc->reset = pl080_reset;
+    device_class_set_legacy_reset(dc, pl080_reset);
 }
 
 static const TypeInfo pl080_info = {

@@ -25,9 +25,6 @@ void migrate_start_colo_process(MigrationState *s);
 bool migration_in_colo_state(void);
 
 /* loadvm */
-int migration_incoming_enable_colo(void);
-void migration_incoming_disable_colo(void);
-bool migration_incoming_colo_enabled(void);
 bool migration_incoming_in_colo_state(void);
 
 COLOMode get_colo_mode(void);
@@ -49,7 +46,7 @@ void colo_checkpoint_delay_set(void);
  *
  * Called with BQL locked, may temporary release BQL.
  */
-int coroutine_fn colo_incoming_co(void);
+void coroutine_fn colo_incoming_co(void);
 
 void colo_shutdown(void);
 #endif

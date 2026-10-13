@@ -233,8 +233,6 @@ code : '{' statements '}'
 argument_decl : REG
                 {
                     emit_arg(c, &@1, &$1);
-                    /* Enqueue register into initialization list */
-                    g_array_append_val(c->inst.init_list, $1);
                 }
               | PRED
                 {
@@ -406,6 +404,9 @@ control_statement : frame_check
                   ;
 
 frame_check : FCHK '(' rvalue ',' rvalue ')' ';'
+              {
+                  gen_framecheck(c, &@1, &$3, &$5);
+              }
             ;
 
 cancel_statement : LOAD_CANCEL
@@ -802,7 +803,6 @@ rvalue : FAIL
 
 lvalue : FAIL
          {
-             @1.last_column = @1.last_column;
              yyassert(c, &@1, false, "Encountered a FAIL token as lvalue.\n");
          }
        | REG
@@ -872,7 +872,7 @@ int main(int argc, char **argv)
     context.header_str = g_string_new(NULL);
     context.ternary = g_array_new(FALSE, TRUE, sizeof(Ternary));
     /* Read input file */
-    FILE *input_file = fopen(argv[ARG_INDEX_IDEFS], "r");
+    FILE *input_file = fopen(argv[ARG_INDEX_IDEFS], "rb");
     fseek(input_file, 0L, SEEK_END);
     long input_size = ftell(input_file);
     context.input_buffer = (char *) calloc(input_size + 1, sizeof(char));

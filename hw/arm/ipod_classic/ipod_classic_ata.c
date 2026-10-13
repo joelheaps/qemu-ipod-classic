@@ -18,11 +18,11 @@
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
 #include "qemu/module.h"
-#include "exec/address-spaces.h"
-#include "sysemu/dma.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "sysemu/blockdev.h"
+#include "system/address-spaces.h"
+#include "system/dma.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "system/blockdev.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_classic/ipod_classic_ata.h"
 
@@ -561,13 +561,13 @@ void ipod_classic_ata_init_drive(DeviceState *dev, DriveInfo *hd)
     }
 }
 
-static void ipod_classic_ata_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_ata_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 ATA controller";
     dc->realize = ipod_classic_ata_realize;
-    dc->reset = ipod_classic_ata_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_ata_reset);
     dc->vmsd = &vmstate_ipod_classic_ata;
     dc->user_creatable = false;
 }

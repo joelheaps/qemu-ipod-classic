@@ -79,7 +79,8 @@ of type ``xen-console`` to connect to it. For the Xen console equivalent of
 the handy ``-serial mon:stdio`` option, for example:
 
 .. parsed-literal::
-   -chardev stdio,mux=on,id=char0,signal=off -mon char0 \\
+   -chardev stdio,mux=on,id=char0,signal=off \\
+   -object monitor-hmp,chardev=char0,id=hmp0 \\
    -device xen-console,chardev=char0
 
 The Xen network device is ``xen-net-device``, which becomes the default NIC
@@ -132,7 +133,8 @@ The example above provides the guest kernel command line after a separator
 (" ``--`` ") on the Xen command line, and does not provide the guest kernel
 with an actual initramfs, which would need to listed as a second multiboot
 module. For more complicated alternatives, see the command line
-documentation for the ``-initrd`` option.
+:ref:`documentation <system/invocation-qemu-options-initrd>` for the
+``-initrd`` option.
 
 Host OS requirements
 --------------------

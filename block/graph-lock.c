@@ -34,6 +34,17 @@ static QemuMutex aio_context_list_lock;
 static int has_writer;
 
 /*
+ * Many write-locked sections are also drained sections. There is a convenience
+ * wrapper bdrv_graph_wrlock_drained() which begins a drained section before
+ * acquiring the lock. This variable here is used so bdrv_graph_wrunlock() knows
+ * if it also needs to end such a drained section. It needs to be a counter,
+ * because the aio_poll() call in bdrv_graph_wrlock() might re-enter
+ * bdrv_graph_wrlock_drained(). And note that aio_bh_poll() in
+ * bdrv_graph_wrunlock() might also re-enter a write-locked section.
+ */
+static int wrlock_quiesced_counter;
+
+/*
  * A reader coroutine could move from an AioContext to another.
  * If this happens, there is no problem from the point of view of
  * counters. The problem is that the total count becomes
@@ -106,29 +117,20 @@ static uint32_t reader_count(void)
     return rd;
 }
 
-void no_coroutine_fn bdrv_graph_wrlock(BlockDriverState *bs)
+void no_coroutine_fn bdrv_graph_wrlock(void)
 {
-    AioContext *ctx = NULL;
-
     GLOBAL_STATE_CODE();
     assert(!qatomic_read(&has_writer));
     assert(!qemu_in_coroutine());
 
-    /*
-     * Release only non-mainloop AioContext. The mainloop often relies on the
-     * BQL and doesn't lock the main AioContext before doing things.
-     */
-    if (bs) {
-        ctx = bdrv_get_aio_context(bs);
-        if (ctx != qemu_get_aio_context()) {
-            aio_context_release(ctx);
-        } else {
-            ctx = NULL;
-        }
-    }
+    bool need_drain = wrlock_quiesced_counter == 0;
 
-    /* Make sure that constantly arriving new I/O doesn't cause starvation */
-    bdrv_drain_all_begin_nopoll();
+    if (need_drain) {
+        /*
+         * Make sure that constantly arriving new I/O doesn't cause starvation
+         */
+        bdrv_drain_all_begin_nopoll();
+    }
 
     /*
      * reader_count == 0: this means writer will read has_reader as 1
@@ -154,27 +156,24 @@ void no_coroutine_fn bdrv_graph_wrlock(BlockDriverState *bs)
         smp_mb();
     } while (reader_count() >= 1);
 
-    bdrv_drain_all_end();
-
-    if (ctx) {
-        aio_context_acquire(bdrv_get_aio_context(bs));
+    if (need_drain) {
+        bdrv_drain_all_end();
     }
 }
 
-void no_coroutine_fn bdrv_graph_wrunlock_ctx(AioContext *ctx)
+void no_coroutine_fn bdrv_graph_wrlock_drained(void)
+{
+    GLOBAL_STATE_CODE();
+
+    bdrv_drain_all_begin();
+    wrlock_quiesced_counter++;
+    bdrv_graph_wrlock();
+}
+
+void no_coroutine_fn bdrv_graph_wrunlock(void)
 {
     GLOBAL_STATE_CODE();
     assert(qatomic_read(&has_writer));
-
-    /*
-     * Release only non-mainloop AioContext. The mainloop often relies on the
-     * BQL and doesn't lock the main AioContext before doing things.
-     */
-    if (ctx && ctx != qemu_get_aio_context()) {
-        aio_context_release(ctx);
-    } else {
-        ctx = NULL;
-    }
 
     WITH_QEMU_LOCK_GUARD(&aio_context_list_lock) {
         /*
@@ -198,16 +197,11 @@ void no_coroutine_fn bdrv_graph_wrunlock_ctx(AioContext *ctx)
      */
     aio_bh_poll(qemu_get_aio_context());
 
-    if (ctx) {
-        aio_context_acquire(ctx);
+    if (wrlock_quiesced_counter > 0) {
+        bdrv_drain_all_end();
+        wrlock_quiesced_counter--;
     }
-}
 
-void no_coroutine_fn bdrv_graph_wrunlock(BlockDriverState *bs)
-{
-    AioContext *ctx = bs ? bdrv_get_aio_context(bs) : NULL;
-
-    bdrv_graph_wrunlock_ctx(ctx);
 }
 
 void coroutine_fn bdrv_graph_co_rdlock(void)
@@ -284,14 +278,12 @@ void coroutine_fn bdrv_graph_co_rdunlock(void)
     smp_mb();
 
     /*
-     * has_writer == 0: this means reader will read reader_count decreased
-     * has_writer == 1: we don't know if writer read reader_count old or
-     *                  new. Therefore, kick again so on next iteration
-     *                  writer will for sure read the updated value.
+     * Always kick: bdrv_graph_wrlock() zeroes has_writer while polling (to
+     * let callbacks take the reader lock via the fast path), so we cannot
+     * rely on has_writer to detect a waiting writer. aio_wait_kick() is a
+     * no-op when no one is waiting, so it is cheap in the common case.
      */
-    if (qatomic_read(&has_writer)) {
-        aio_wait_kick();
-    }
+    aio_wait_kick();
 }
 
 void bdrv_graph_rdlock_main_loop(void)

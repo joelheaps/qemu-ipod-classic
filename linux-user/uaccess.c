@@ -14,7 +14,7 @@ void *lock_user(int type, abi_ulong guest_addr, ssize_t len, bool copy)
         return NULL;
     }
     host_addr = g2h_untagged(guest_addr);
-#ifdef DEBUG_REMAP
+#ifdef CONFIG_DEBUG_REMAP
     if (copy) {
         host_addr = g_memdup(host_addr, len);
     } else {
@@ -24,7 +24,7 @@ void *lock_user(int type, abi_ulong guest_addr, ssize_t len, bool copy)
     return host_addr;
 }
 
-#ifdef DEBUG_REMAP
+#ifdef CONFIG_DEBUG_REMAP
 void unlock_user(void *host_ptr, abi_ulong guest_addr, ssize_t len)
 {
     void *host_ptr_conv;
@@ -99,7 +99,7 @@ ssize_t target_strlen(abi_ulong guest_addr1)
         ptr = lock_user(VERIFY_READ, guest_addr, max_len, 1);
         if (!ptr)
             return -TARGET_EFAULT;
-        len = qemu_strnlen((const char *)ptr, max_len);
+        len = strnlen((const char *)ptr, max_len);
         unlock_user(ptr, guest_addr, 0);
         guest_addr += len;
         /* we don't allow wrapping or integer overflow */

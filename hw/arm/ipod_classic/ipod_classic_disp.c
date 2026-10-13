@@ -27,10 +27,10 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "hw/arm/ipod_classic/ipod_classic_disp.h"
 
 /*
@@ -572,13 +572,13 @@ static const VMStateDescription vmstate_ipod_classic_disp = {
     },
 };
 
-static void ipod_classic_disp_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_disp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 display pipe";
     dc->realize = ipod_classic_disp_realize;
-    dc->reset = ipod_classic_disp_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_disp_reset);
     dc->vmsd = &vmstate_ipod_classic_disp;
     dc->user_creatable = false;
 }

@@ -17,7 +17,7 @@
 #define HW_ARM_IPOD_CLASSIC_CLK_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 #define TYPE_IPOD_CLASSIC_CLK "s5l8702.clk"

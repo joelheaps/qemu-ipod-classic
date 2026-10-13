@@ -1,6 +1,6 @@
 #include "qemu/osdep.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/virtio-gpu.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -19,19 +19,19 @@ static void virtio_vga_base_invalidate_display(void *opaque)
     }
 }
 
-static void virtio_vga_base_update_display(void *opaque)
+static bool virtio_vga_base_update_display(void *opaque)
 {
     VirtIOVGABase *vvga = opaque;
     VirtIOGPUBase *g = vvga->vgpu;
 
     if (g->enable) {
-        g->hw_ops->gfx_update(g);
+        return g->hw_ops->gfx_update(g);
     } else {
-        vvga->vga.hw_ops->gfx_update(&vvga->vga);
+        return vvga->vga.hw_ops->gfx_update(&vvga->vga);
     }
 }
 
-static void virtio_vga_base_text_update(void *opaque, console_ch_t *chardata)
+static void virtio_vga_base_text_update(void *opaque, uint32_t *chardata)
 {
     VirtIOVGABase *vvga = opaque;
     VirtIOGPUBase *g = vvga->vgpu;
@@ -88,7 +88,7 @@ static const VMStateDescription vmstate_virtio_vga_base = {
     .name = "virtio-vga",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /* no pci stuff here, saving the virtio device will handle that */
         VMSTATE_STRUCT(vga, VirtIOVGABase, 0,
                        vmstate_vga_common, VGACommonState),
@@ -172,7 +172,7 @@ static void virtio_vga_base_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
                                  vvga->vga_mrs, true, false);
 
     vga->con = g->scanout[0].con;
-    graphic_console_set_hwops(vga->con, &virtio_vga_base_ops, vvga);
+    qemu_graphic_console_set_hwops(vga->con, &virtio_vga_base_ops, vvga);
 
     for (i = 0; i < g->conf.max_outputs; i++) {
         object_property_set_link(OBJECT(g->scanout[i].con), "device",
@@ -180,14 +180,14 @@ static void virtio_vga_base_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
     }
 }
 
-static void virtio_vga_base_reset_hold(Object *obj)
+static void virtio_vga_base_reset_hold(Object *obj, ResetType type)
 {
     VirtIOVGABaseClass *klass = VIRTIO_VGA_BASE_GET_CLASS(obj);
     VirtIOVGABase *vvga = VIRTIO_VGA_BASE(obj);
 
     /* reset virtio-gpu */
     if (klass->parent_phases.hold) {
-        klass->parent_phases.hold(obj);
+        klass->parent_phases.hold(obj, type);
     }
 
     /* reset vga */
@@ -209,12 +209,11 @@ static void virtio_vga_set_big_endian_fb(Object *obj, bool value, Error **errp)
     d->vga.big_endian_fb = value;
 }
 
-static Property virtio_vga_base_properties[] = {
+static const Property virtio_vga_base_properties[] = {
     DEFINE_VIRTIO_GPU_PCI_PROPERTIES(VirtIOPCIProxy),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void virtio_vga_base_class_init(ObjectClass *klass, void *data)
+static void virtio_vga_base_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioPCIClass *k = VIRTIO_PCI_CLASS(klass);

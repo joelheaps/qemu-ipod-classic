@@ -13,20 +13,18 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "qapi/qapi-commands-migration.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qapi/error.h"
-#include "sysemu/dirtyrate.h"
-#include "sysemu/dirtylimit.h"
+#include "system/dirtyrate.h"
+#include "system/dirtylimit.h"
 #include "monitor/hmp.h"
 #include "monitor/monitor.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "exec/target_page.h"
-#include "hw/boards.h"
-#include "sysemu/kvm.h"
+#include "hw/core/boards.h"
+#include "system/kvm.h"
 #include "trace.h"
 #include "migration/misc.h"
-#include "migration/migration.h"
-#include "migration/options.h"
 
 /*
  * Dirtylimit stop working if dirty page rate error
@@ -78,14 +76,12 @@ static bool dirtylimit_quit;
 
 static void vcpu_dirty_rate_stat_collect(void)
 {
-    MigrationState *s = migrate_get_current();
     VcpuStat stat;
     int i = 0;
     int64_t period = DIRTYLIMIT_CALC_TIME_MS;
 
-    if (migrate_dirty_limit() &&
-        migration_is_active(s)) {
-        period = s->parameters.x_vcpu_dirty_limit_period;
+    if (migrate_dirty_limit() && migration_is_running()) {
+        period = migrate_vcpu_dirty_limit_period();
     }
 
     /* calculate vcpu dirtyrate */
@@ -127,7 +123,7 @@ static void *vcpu_dirty_rate_stat_thread(void *opaque)
 int64_t vcpu_dirty_rate_get(int cpu_index)
 {
     DirtyRateVcpu *rates = vcpu_dirty_rate_stat->stat.rates;
-    return qatomic_read_i64(&rates[cpu_index].dirty_rate);
+    return qatomic_read(&rates[cpu_index].dirty_rate);
 }
 
 void vcpu_dirty_rate_stat_start(void)
@@ -148,9 +144,9 @@ void vcpu_dirty_rate_stat_stop(void)
 {
     qatomic_set(&vcpu_dirty_rate_stat->running, 0);
     dirtylimit_state_unlock();
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     qemu_thread_join(&vcpu_dirty_rate_stat->thread);
-    qemu_mutex_lock_iothread();
+    bql_lock();
     dirtylimit_state_lock();
 }
 
@@ -341,8 +337,6 @@ static void dirtylimit_adjust_throttle(CPUState *cpu)
     if (!dirtylimit_done(quota, current)) {
         dirtylimit_set_throttle(cpu, quota, current);
     }
-
-    return;
 }
 
 void dirtylimit_process(void)
@@ -450,10 +444,8 @@ static void dirtylimit_cleanup(void)
  */
 static bool dirtylimit_is_allowed(void)
 {
-    MigrationState *ms = migrate_get_current();
-
-    if (migration_is_running(ms->state) &&
-        (!qemu_thread_is_self(&ms->thread)) &&
+    if (migration_is_running() &&
+        !migration_thread_is_self() &&
         migrate_dirty_limit() &&
         dirtylimit_in_service()) {
         return false;

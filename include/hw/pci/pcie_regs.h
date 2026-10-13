@@ -39,6 +39,8 @@ typedef enum PCIExpLinkSpeed {
     QEMU_PCI_EXP_LNK_5GT,
     QEMU_PCI_EXP_LNK_8GT,
     QEMU_PCI_EXP_LNK_16GT,
+    QEMU_PCI_EXP_LNK_32GT,
+    QEMU_PCI_EXP_LNK_64GT,
 } PCIExpLinkSpeed;
 
 #define QEMU_PCI_EXP_LNKCAP_MLS(speed)  (speed)
@@ -83,6 +85,14 @@ typedef enum PCIExpLinkWidth {
 /* ARI */
 #define PCI_ARI_VER                     1
 #define PCI_ARI_SIZEOF                  8
+
+/* PASID */
+#define PCI_PASID_VER                   1
+#define PCI_EXT_CAP_PASID_MAX_WIDTH     20
+#define PCI_PASID_CAP_WIDTH_SHIFT       8
+
+/* PRI */
+#define PCI_PRI_VER                     1
 
 /* AER */
 #define PCI_ERR_VER                     2

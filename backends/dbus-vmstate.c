@@ -393,7 +393,7 @@ static const VMStateDescription dbus_vmstate = {
     .version_id = 0,
     .pre_save = dbus_vmstate_pre_save,
     .post_load = dbus_vmstate_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(data_size, DBusVMState),
         VMSTATE_VBUFFER_ALLOC_UINT32(data, DBusVMState, 0, 0, data_size),
         VMSTATE_END_OF_LIST()
@@ -485,7 +485,7 @@ dbus_vmstate_get_id(VMStateIf *vmif)
 }
 
 static void
-dbus_vmstate_class_init(ObjectClass *oc, void *data)
+dbus_vmstate_class_init(ObjectClass *oc, const void *data)
 {
     UserCreatableClass *ucc = USER_CREATABLE_CLASS(oc);
     VMStateIfClass *vc = VMSTATE_IF_CLASS(oc);
@@ -505,7 +505,7 @@ static const TypeInfo dbus_vmstate_info = {
     .instance_size = sizeof(DBusVMState),
     .instance_finalize = dbus_vmstate_finalize,
     .class_init = dbus_vmstate_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { TYPE_VMSTATE_IF },
         { }

@@ -19,7 +19,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci/pci_device.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/intc/i8259.h"
 #include "hw/timer/i8254.h"
 #include "migration/vmstate.h"
@@ -40,7 +40,7 @@ static const VMStateDescription vmstate_i82378 = {
     .name = "pci-i82378",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, I82378State),
         VMSTATE_END_OF_LIST()
     },
@@ -122,7 +122,7 @@ static void i82378_init(Object *obj)
     qdev_init_gpio_in(dev, i82378_request_pic_irq, 16);
 }
 
-static void i82378_class_init(ObjectClass *klass, void *data)
+static void i82378_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -142,7 +142,7 @@ static const TypeInfo i82378_type_info = {
     .instance_size = sizeof(I82378State),
     .instance_init = i82378_init,
     .class_init = i82378_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

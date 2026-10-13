@@ -16,8 +16,8 @@
 
 #include "qemu/osdep.h"
 
-#include "hw/irq.h"
-#include "hw/registerfields.h"
+#include "hw/core/irq.h"
+#include "hw/core/registerfields.h"
 #include "hw/ssi/npcm_pspi.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -192,14 +192,14 @@ static const VMStateDescription vmstate_npcm_pspi = {
     .name = "npcm-pspi",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT16_ARRAY(regs, NPCMPSPIState, NPCM_PSPI_NR_REGS),
         VMSTATE_END_OF_LIST(),
     },
 };
 
 
-static void npcm_pspi_class_init(ObjectClass *klass, void *data)
+static void npcm_pspi_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

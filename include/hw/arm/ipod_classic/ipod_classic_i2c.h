@@ -33,7 +33,7 @@
 #define HW_ARM_IPOD_CLASSIC_I2C_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
 #include "qom/object.h"
 

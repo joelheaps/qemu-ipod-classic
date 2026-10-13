@@ -10,5 +10,5 @@ exec uvx --with mdformat-gfm mdformat --wrap no --compact-tables \
   README.md CONTEXT.md tools/README.md \
   assets/README.md docker/README.md \
   docs/ipod \
-  hw/arm/ipod_classic/README.md hw/arm/ipod_video/README.md \
+  hw/arm/ipod_classic/README.md \
   "$@"

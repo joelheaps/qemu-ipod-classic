@@ -131,7 +131,7 @@ static const VMStateDescription vmstate_eeprom = {
     .name = "eeprom",
     .version_id = EEPROM_VERSION,
     .minimum_version_id = OLD_EEPROM_VERSION,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(tick, eeprom_t),
         VMSTATE_UINT8(address, eeprom_t),
         VMSTATE_UINT8(command, eeprom_t),
@@ -144,7 +144,7 @@ static const VMStateDescription vmstate_eeprom = {
         VMSTATE_UINT8(addrbits, eeprom_t),
         VMSTATE_UINT16_HACK_TEST(size, eeprom_t, is_old_eeprom_version),
         VMSTATE_UNUSED_TEST(is_old_eeprom_version, 1),
-        VMSTATE_UINT16_EQUAL_V(size, eeprom_t, EEPROM_VERSION, NULL),
+        VMSTATE_UINT16_EQUAL_V(size, eeprom_t, EEPROM_VERSION),
         VMSTATE_UINT16(data, eeprom_t),
         VMSTATE_VARRAY_UINT16_UNSAFE(contents, eeprom_t, size, 0,
                                      vmstate_info_uint16, uint16_t),

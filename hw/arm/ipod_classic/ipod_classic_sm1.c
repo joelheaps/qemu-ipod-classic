@@ -59,8 +59,8 @@
 #include "qemu/module.h"
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
-#include "exec/cpu-common.h"   /* cpu_physical_memory_write: el estado en IRAM1 */
-#include "hw/irq.h"
+#include "system/physmem.h"   /* physical_memory_write: el estado en IRAM1 */
+#include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "hw/arm/ipod_classic/ipod_classic_sm1.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
@@ -330,20 +330,20 @@ static int sm1_publish_slots(IPodClassicSM1State *s)
      * guard requires to be zero, and the slot geometry.
      */
     h = cpu_to_le16(0x0003);
-    cpu_physical_memory_write(SM1_SLOT_DESC + 0, &h, 2);
+    physical_memory_write(SM1_SLOT_DESC + 0, &h, 2);
     h = cpu_to_le16(0);
-    cpu_physical_memory_write(SM1_SLOT_DESC + 2, &h, 2);
+    physical_memory_write(SM1_SLOT_DESC + 2, &h, 2);
     h = cpu_to_le16(SM1_SLOT_FRAMES);
-    cpu_physical_memory_write(SM1_SLOT_DESC + 4, &h, 2);
+    physical_memory_write(SM1_SLOT_DESC + 4, &h, 2);
 
     /* The slot count the firmware wraps its index against. */
     h = cpu_to_le16(SM1_SLOT_COUNT);
-    cpu_physical_memory_write(SM1_SLOT_ARRAY + 2, &h, 2);
+    physical_memory_write(SM1_SLOT_ARRAY + 2, &h, 2);
 
     /* Per-slot stride in halfwords, read by getdata from the slot block at +4
      * (see the decoder below): buffers are SM1_SLOT_FRAMES*2 bytes apart. */
     h = cpu_to_le16(SM1_SLOT_FRAMES);
-    cpu_physical_memory_write(SM1_SLOT_ARRAY + 4, &h, 2);
+    physical_memory_write(SM1_SLOT_ARRAY + 4, &h, 2);
 
     /*
      * FREEING SLOTS AT THE RATE PLAYBACK ACTUALLY CONSUMES THEM.
@@ -383,9 +383,9 @@ static int sm1_publish_slots(IPodClassicSM1State *s)
             unsigned i = (unsigned)(freed % SM1_SLOT_COUNT);
 
             h = cpu_to_le16(1);
-            cpu_physical_memory_write(SM1_SLOT_ARRAY + 10 + i * 4, &h, 2);
+            physical_memory_write(SM1_SLOT_ARRAY + 10 + i * 4, &h, 2);
             h = cpu_to_le16(SM1_SLOT_FRAMES);
-            cpu_physical_memory_write(SM1_SLOT_ARRAY + 12 + i * 4, &h, 2);
+            physical_memory_write(SM1_SLOT_ARRAY + 12 + i * 4, &h, 2);
             freed++;
             freed_now++;
         }
@@ -463,14 +463,14 @@ static bool sm1_decode_on(void)
 static uint16_t sm1_rd16(hwaddr a)
 {
     uint16_t v;
-    cpu_physical_memory_read(a, &v, 2);
+    physical_memory_read(a, &v, 2);
     return le16_to_cpu(v);
 }
 
 static void sm1_wr16(hwaddr a, uint16_t v)
 {
     v = cpu_to_le16(v);
-    cpu_physical_memory_write(a, &v, 2);
+    physical_memory_write(a, &v, 2);
 }
 
 /* Consume the pending frame, if any. True when a slot was published. */
@@ -500,7 +500,7 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
     if (!(chain & 1)) {
         return false;
     }
-    cpu_physical_memory_read(chain & ~3u, d, sizeof(d));
+    physical_memory_read(chain & ~3u, d, sizeof(d));
     len = le32_to_cpu(d[1]) >> 16;
     if (sm1_trace_on()) {
         fprintf(stderr, "SM1DEC chain=0x%08x desc={%08x,%08x,%08x} len=%u "
@@ -512,7 +512,7 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
                 sm1_rd16(SM1_CTL + 10));
         {
             uint8_t head[16];
-            cpu_physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, head,
+            physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, head,
                                      sizeof(head));
             fprintf(stderr, "SM1DEC data %02x%02x%02x%02x %02x%02x%02x%02x "
                     "%02x%02x%02x%02x %02x%02x%02x%02x\n", head[0], head[1],
@@ -540,7 +540,7 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
         return false;                    /* output slot still owned by the guest */
     }
     {
-        cpu_physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, frame, len);
+        physical_memory_read(le32_to_cpu(d[2]) & 0x7fffffff, frame, len);
         if (!s->dec) {
             s->dec = sm1_dec_new();
         }
@@ -585,7 +585,7 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
             fflush(fd);
         }
     }
-    cpu_physical_memory_write(SM1_SLOT_BUF + w * cap * 2, pcm, n * 2);
+    physical_memory_write(SM1_SLOT_BUF + w * cap * 2, pcm, n * 2);
     sm1_wr16(SM1_SLOT_DESC + 0, 3);
     sm1_wr16(SM1_SLOT_DESC + 2, 0);
     sm1_wr16(SM1_SLOT_DESC + 4, cap);
@@ -604,7 +604,7 @@ static bool sm1_decode_frame(IPodClassicSM1State *s)
     sm1_wr16(arr + 12 + w * 4, n);
     sm1_wr16(arr + 10 + w * 4, 1);
     d[1] = cpu_to_le32(le32_to_cpu(d[1]) & 0xffff);   /* descriptor consumed */
-    cpu_physical_memory_write((chain & ~3u) + 4, &d[1], 4);
+    physical_memory_write((chain & ~3u) + 4, &d[1], 4);
     s->dec_w = (w + 1) % slots;
     return true;
 }
@@ -1141,12 +1141,12 @@ static const VMStateDescription vmstate_ipod_classic_sm1 = {
     },
 };
 
-static void ipod_classic_sm1_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_sm1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 SM1 audio clock/stream engine";
-    dc->reset = ipod_classic_sm1_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_sm1_reset);
     dc->vmsd = &vmstate_ipod_classic_sm1;
     dc->user_creatable = false;
 }

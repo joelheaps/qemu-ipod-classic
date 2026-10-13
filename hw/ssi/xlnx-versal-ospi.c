@@ -23,12 +23,12 @@
  * THE SOFTWARE.
  */
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/bitops.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/ssi/xlnx-versal-ospi.h"
 
 #ifndef XILINX_VERSAL_OSPI_ERR_DEBUG
@@ -1569,15 +1569,11 @@ static RegisterAccessInfo ospi_regs_info[] = {
 };
 
 /* Return dev-obj from reg-region created by register_init_block32 */
-static XlnxVersalOspi *xilinx_ospi_of_mr(void *mr_accessor)
+static XlnxVersalOspi *xilinx_ospi_of_mr(void *opaque)
 {
-    RegisterInfoArray *reg_array = mr_accessor;
-    Object *dev;
+    RegisterInfoArray *reg_array = REGISTER_ARRAY(opaque);
 
-    dev = reg_array->mem.owner;
-    assert(dev);
-
-    return XILINX_VERSAL_OSPI(dev);
+    return XILINX_VERSAL_OSPI(register_array_get_owner(reg_array));
 }
 
 static void ospi_write(void *opaque, hwaddr addr, uint64_t value,
@@ -1772,6 +1768,12 @@ static void xlnx_versal_ospi_init(Object *obj)
     memory_region_init_io(&s->iomem_dac, obj, &ospi_dac_ops, s,
                           TYPE_XILINX_VERSAL_OSPI "-dac", 0x20000000);
     sysbus_init_mmio(sbd, &s->iomem_dac);
+    /*
+     * The OSPI DMA reads flash data through the OSPI linear address space (the
+     * iomem_dac region), because of this the reentrancy guard needs to be
+     * disabled.
+     */
+    s->iomem_dac.disable_reentrancy_guard = true;
 
     sysbus_init_irq(sbd, &s->irq);
 
@@ -1787,7 +1789,7 @@ static const VMStateDescription vmstate_ind_op = {
     .name = "OSPIIndOp",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(flash_addr, IndOp),
         VMSTATE_UINT32(num_bytes, IndOp),
         VMSTATE_UINT32(done_bytes, IndOp),
@@ -1800,7 +1802,7 @@ static const VMStateDescription vmstate_xlnx_versal_ospi = {
     .name = TYPE_XILINX_VERSAL_OSPI,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_FIFO8(rx_fifo, XlnxVersalOspi),
         VMSTATE_FIFO8(tx_fifo, XlnxVersalOspi),
         VMSTATE_FIFO8(rx_sram, XlnxVersalOspi),
@@ -1819,18 +1821,17 @@ static const VMStateDescription vmstate_xlnx_versal_ospi = {
     }
 };
 
-static Property xlnx_versal_ospi_properties[] = {
+static const Property xlnx_versal_ospi_properties[] = {
     DEFINE_PROP_BOOL("dac-with-indac", XlnxVersalOspi, dac_with_indac, false),
     DEFINE_PROP_BOOL("indac-write-disabled", XlnxVersalOspi,
                      ind_write_disabled, false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void xlnx_versal_ospi_class_init(ObjectClass *klass, void *data)
+static void xlnx_versal_ospi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = xlnx_versal_ospi_reset;
+    device_class_set_legacy_reset(dc, xlnx_versal_ospi_reset);
     dc->realize = xlnx_versal_ospi_realize;
     dc->vmsd = &vmstate_xlnx_versal_ospi;
     device_class_set_props(dc, xlnx_versal_ospi_properties);

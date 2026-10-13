@@ -10,9 +10,9 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu-io.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "block/block.h"
 #include "block/block_int.h" /* for info_f() */
 #include "block/qapi.h"
@@ -1739,12 +1739,26 @@ static int zone_report_f(BlockBackend *blk, int argc, char **argv)
 {
     int ret;
     int64_t offset;
+    int64_t val;
     unsigned int nr_zones;
 
     ++optind;
     offset = cvtnum(argv[optind]);
+    if (offset < 0) {
+        print_cvtnum_err(offset, argv[optind]);
+        return offset;
+    }
     ++optind;
-    nr_zones = cvtnum(argv[optind]);
+    val = cvtnum(argv[optind]);
+    if (val < 0) {
+        print_cvtnum_err(val, argv[optind]);
+        return val;
+    }
+    if (val > UINT_MAX) {
+        printf("Number of zones must be less than 2^32\n");
+        return -ERANGE;
+    }
+    nr_zones = val;
 
     g_autofree BlockZoneDescriptor *zones = NULL;
     zones = g_new(BlockZoneDescriptor, nr_zones);
@@ -1780,8 +1794,16 @@ static int zone_open_f(BlockBackend *blk, int argc, char **argv)
     int64_t offset, len;
     ++optind;
     offset = cvtnum(argv[optind]);
+    if (offset < 0) {
+        print_cvtnum_err(offset, argv[optind]);
+        return offset;
+    }
     ++optind;
     len = cvtnum(argv[optind]);
+    if (len < 0) {
+        print_cvtnum_err(len, argv[optind]);
+        return len;
+    }
     ret = blk_zone_mgmt(blk, BLK_ZO_OPEN, offset, len);
     if (ret < 0) {
         printf("zone open failed: %s\n", strerror(-ret));
@@ -1805,8 +1827,16 @@ static int zone_close_f(BlockBackend *blk, int argc, char **argv)
     int64_t offset, len;
     ++optind;
     offset = cvtnum(argv[optind]);
+    if (offset < 0) {
+        print_cvtnum_err(offset, argv[optind]);
+        return offset;
+    }
     ++optind;
     len = cvtnum(argv[optind]);
+    if (len < 0) {
+        print_cvtnum_err(len, argv[optind]);
+        return len;
+    }
     ret = blk_zone_mgmt(blk, BLK_ZO_CLOSE, offset, len);
     if (ret < 0) {
         printf("zone close failed: %s\n", strerror(-ret));
@@ -1830,8 +1860,16 @@ static int zone_finish_f(BlockBackend *blk, int argc, char **argv)
     int64_t offset, len;
     ++optind;
     offset = cvtnum(argv[optind]);
+    if (offset < 0) {
+        print_cvtnum_err(offset, argv[optind]);
+        return offset;
+    }
     ++optind;
     len = cvtnum(argv[optind]);
+    if (len < 0) {
+        print_cvtnum_err(len, argv[optind]);
+        return len;
+    }
     ret = blk_zone_mgmt(blk, BLK_ZO_FINISH, offset, len);
     if (ret < 0) {
         printf("zone finish failed: %s\n", strerror(-ret));
@@ -1855,8 +1893,16 @@ static int zone_reset_f(BlockBackend *blk, int argc, char **argv)
     int64_t offset, len;
     ++optind;
     offset = cvtnum(argv[optind]);
+    if (offset < 0) {
+        print_cvtnum_err(offset, argv[optind]);
+        return offset;
+    }
     ++optind;
     len = cvtnum(argv[optind]);
+    if (len < 0) {
+        print_cvtnum_err(len, argv[optind]);
+        return len;
+    }
     ret = blk_zone_mgmt(blk, BLK_ZO_RESET, offset, len);
     if (ret < 0) {
         printf("zone reset failed: %s\n", strerror(-ret));
@@ -2155,7 +2201,7 @@ static int discard_f(BlockBackend *blk, int argc, char **argv)
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    ret = blk_pdiscard(blk, offset, bytes);
+    ret = blk_pdiscard(blk, offset, bytes, 0);
     clock_gettime(CLOCK_MONOTONIC, &t2);
 
     if (ret < 0) {
@@ -2168,6 +2214,120 @@ static int discard_f(BlockBackend *blk, int argc, char **argv)
         t2 = tsub(t2, t1);
         print_report("discard", &t2, offset, bytes, bytes, 1, Cflag);
     }
+
+    return 0;
+}
+
+static void aio_discard_help(void)
+{
+    printf(
+"\n"
+" asynchronously discards a range of bytes from the given offset\n"
+"\n"
+" Example:\n"
+" 'aio_discard 512 1k' - discards 1 kilobyte from 512 bytes into the file\n"
+"\n"
+" Discards a segment of the currently open file.\n"
+" -C, -- report statistics in a machine parsable format\n"
+" -q, -- quiet mode, do not show I/O statistics\n"
+" The discard is performed asynchronously and the aio_flush command must be\n"
+" used to ensure all outstanding aio requests have been completed.\n"
+" Note that due to its asynchronous nature, this command will be\n"
+" considered successful once the request is submitted, independently\n"
+" of potential I/O errors.\n"
+"\n");
+}
+
+static int aio_discard_f(BlockBackend *blk, int argc, char **argv);
+
+static const cmdinfo_t aio_discard_cmd = {
+    .name       = "aio_discard",
+    .cfunc      = aio_discard_f,
+    .perm       = BLK_PERM_WRITE,
+    .argmin     = 2,
+    .argmax     = -1,
+    .args       = "[-Cq] off len",
+    .oneline    = "asynchronously discards a number of bytes",
+    .help       = aio_discard_help,
+};
+
+static void aio_discard_done(void *opaque, int ret)
+{
+    struct aio_ctx *ctx = opaque;
+    struct timespec t2;
+
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+
+    if (ret < 0) {
+        printf("aio_discard failed: %s\n", strerror(-ret));
+        block_acct_failed(blk_get_stats(ctx->blk), &ctx->acct);
+        goto out;
+    }
+
+    block_acct_done(blk_get_stats(ctx->blk), &ctx->acct);
+
+    if (ctx->qflag) {
+        goto out;
+    }
+
+    /* Finally, report back -- -C gives a parsable format */
+    t2 = tsub(t2, ctx->t1);
+    print_report("discarded ", &t2, ctx->offset, ctx->qiov.size,
+                 ctx->qiov.size, 1, ctx->Cflag);
+out:
+    g_free(ctx);
+}
+
+static int aio_discard_f(BlockBackend *blk, int argc, char **argv)
+{
+    int c, ret;
+    int64_t count;
+    struct aio_ctx *ctx = g_new0(struct aio_ctx, 1);
+
+    ctx->blk = blk;
+
+    while ((c = getopt(argc, argv, "Cq")) != -1) {
+        switch (c) {
+        case 'C':
+            ctx->Cflag = true;
+            break;
+        case 'q':
+            ctx->qflag = true;
+            break;
+        default:
+            g_free(ctx);
+            qemuio_command_usage(&aio_discard_cmd);
+            return -EINVAL;
+        }
+    }
+
+    if (optind != argc - 2) {
+        g_free(ctx);
+        qemuio_command_usage(&aio_discard_cmd);
+        return -EINVAL;
+    }
+
+    ctx->offset = cvtnum(argv[optind]);
+    if (ctx->offset < 0) {
+        ret = ctx->offset;
+        print_cvtnum_err(ret, argv[optind]);
+        g_free(ctx);
+        return ret;
+    }
+    optind++;
+
+    count = cvtnum(argv[optind]);
+    if (count < 0) {
+        print_cvtnum_err(count, argv[optind]);
+        g_free(ctx);
+        return count;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &ctx->t1);
+    ctx->qiov.size = count;
+    block_acct_start(blk_get_stats(blk), &ctx->acct, ctx->qiov.size,
+                     BLOCK_ACCT_UNMAP);
+    blk_aio_pdiscard(blk, ctx->offset, count, aio_discard_done, ctx);
 
     return 0;
 }
@@ -2754,6 +2914,7 @@ static void __attribute((constructor)) init_qemuio_commands(void)
     qemuio_add_command(&length_cmd);
     qemuio_add_command(&info_cmd);
     qemuio_add_command(&discard_cmd);
+    qemuio_add_command(&aio_discard_cmd);
     qemuio_add_command(&alloc_cmd);
     qemuio_add_command(&map_cmd);
     qemuio_add_command(&reopen_cmd);

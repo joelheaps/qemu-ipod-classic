@@ -13,12 +13,12 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "qapi/error.h"
-#include "sysemu/block-backend.h"
-#include "hw/sysbus.h"
+#include "system/block-backend.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "hw/block/block.h"
 #include "hw/block/swim.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 
 
@@ -166,10 +166,9 @@ static const BlockDevOps swim_block_ops = {
     .change_media_cb = swim_change_cb,
 };
 
-static Property swim_drive_properties[] = {
+static const Property swim_drive_properties[] = {
     DEFINE_PROP_INT32("unit", SWIMDrive, unit, -1),
     DEFINE_BLOCK_PROPERTIES(SWIMDrive, conf),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void swim_drive_realize(DeviceState *qdev, Error **errp)
@@ -254,7 +253,7 @@ static void swim_drive_realize(DeviceState *qdev, Error **errp)
     blk_set_dev_ops(drive->blk, &swim_block_ops, drive);
 }
 
-static void swim_drive_class_init(ObjectClass *klass, void *data)
+static void swim_drive_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
     k->realize = swim_drive_realize;
@@ -516,7 +515,7 @@ static const VMStateDescription vmstate_fdrive = {
     .name = "fdrive",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_END_OF_LIST()
     },
 };
@@ -525,7 +524,7 @@ static const VMStateDescription vmstate_swim = {
     .name = "swim",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(mode, SWIMCtrl),
         /* IWM mode */
         VMSTATE_INT32(iwm_switch, SWIMCtrl),
@@ -545,18 +544,18 @@ static const VMStateDescription vmstate_swim = {
 static const VMStateDescription vmstate_sysbus_swim = {
     .name = "SWIM",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(ctrl, Swim, 0, vmstate_swim, SWIMCtrl),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static void sysbus_swim_class_init(ObjectClass *oc, void *data)
+static void sysbus_swim_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = sysbus_swim_realize;
-    dc->reset = sysbus_swim_reset;
+    device_class_set_legacy_reset(dc, sysbus_swim_reset);
     dc->vmsd = &vmstate_sysbus_swim;
 }
 

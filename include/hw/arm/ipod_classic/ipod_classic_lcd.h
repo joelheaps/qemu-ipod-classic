@@ -36,7 +36,7 @@
 #define HW_ARM_IPOD_CLASSIC_LCD_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 #include "ui/console.h"
 

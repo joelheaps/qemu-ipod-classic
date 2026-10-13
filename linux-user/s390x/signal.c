@@ -22,6 +22,7 @@
 #include "signal-common.h"
 #include "linux-user/trace.h"
 #include "vdso-asmoffset.h"
+#include "target_ptrace.h"
 
 #define __NUM_GPRS 16
 #define __NUM_FPRS 16
@@ -267,7 +268,7 @@ void setup_rt_frame(int sig, struct target_sigaction *ka,
     }
 
     /* Create siginfo on the signal stack. */
-    tswap_siginfo(&frame->info, info);
+    frame->info = *info;
 
     /* Create ucontext on the signal stack. */
     uc_flags = 0;
@@ -331,7 +332,11 @@ static void restore_sigregs(CPUS390XState *env, target_sigregs *sc)
     for (i = 0; i < 16; i++) {
         __get_user(env->aregs[i], &sc->regs.acrs[i]);
     }
-    __get_user(env->fpc, &sc->fpregs.fpc);
+    {
+        uint32_t fpc;
+        __get_user(fpc, &sc->fpregs.fpc);
+        cpu_s390x_load_fpc(env, fpc);
+    }
     for (i = 0; i < 16; i++) {
         __get_user(*get_freg(env, i), &sc->fpregs.fprs[i]);
     }

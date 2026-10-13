@@ -31,19 +31,18 @@
 #include "qemu/osdep.h"
 
 #include "cpu.h"
-#include "exec/exec-all.h"
-#include "disas/disas.h"
 #include "tcg/tcg-op.h"
 #include "qemu/log.h"
 #include "qemu/qemu-print.h"
-#include "exec/cpu_ldst.h"
-#include "semihosting/semihost.h"
 #include "exec/translator.h"
-
+#include "exec/translation-block.h"
+#include "exec/target_page.h"
 #include "exec/helper-proto.h"
 #include "exec/helper-gen.h"
-
 #include "exec/log.h"
+#ifndef CONFIG_USER_ONLY
+#include "semihosting/semihost.h"
+#endif
 
 #define HELPER_H "helper.h"
 #include "exec/helper-info.c.inc"
@@ -113,17 +112,12 @@ void xtensa_collect_sr_names(const XtensaConfig *config)
 
             if (*pname) {
                 if (strstr(*pname, name) == NULL) {
-                    char *new_name =
-                        malloc(strlen(*pname) + strlen(name) + 2);
-
-                    strcpy(new_name, *pname);
-                    strcat(new_name, "/");
-                    strcat(new_name, name);
-                    free(*pname);
+                    char *new_name = g_strdup_printf("%s/%s", *pname, name);
+                    g_free(*pname);
                     *pname = new_name;
                 }
             } else {
-                *pname = strdup(name);
+                *pname = g_strdup(name);
             }
         }
     }
@@ -523,7 +517,7 @@ static MemOp gen_load_store_alignment(DisasContext *dc, MemOp mop,
         mop |= MO_ALIGN;
     }
     if (!option_enabled(dc, XTENSA_OPTION_UNALIGNED_EXCEPTION)) {
-        tcg_gen_andi_i32(addr, addr, ~0 << get_alignment_bits(mop));
+        tcg_gen_andi_i32(addr, addr, ~0 << memop_alignment_bits(mop));
     }
     return mop;
 }
@@ -1119,31 +1113,17 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
 
 static inline unsigned xtensa_insn_len(CPUXtensaState *env, DisasContext *dc)
 {
-    uint8_t b0 = cpu_ldub_code(env, dc->pc);
+    uint8_t b0 = translator_ldub(env, &dc->base, dc->pc);
     return xtensa_op0_insn_len(dc, b0);
-}
-
-static void gen_ibreak_check(CPUXtensaState *env, DisasContext *dc)
-{
-    unsigned i;
-
-    for (i = 0; i < dc->config->nibreak; ++i) {
-        if ((env->sregs[IBREAKENABLE] & (1 << i)) &&
-                env->sregs[IBREAKA + i] == dc->pc) {
-            gen_debug_exception(dc, DEBUGCAUSE_IB);
-            break;
-        }
-    }
 }
 
 static void xtensa_tr_init_disas_context(DisasContextBase *dcbase,
                                          CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
-    CPUXtensaState *env = cpu_env(cpu);
     uint32_t tb_flags = dc->base.tb->flags;
 
-    dc->config = env->config;
+    dc->config = cpu_env(cpu)->config;
     dc->pc = dc->base.pc_first;
     dc->ring = tb_flags & XTENSA_TBFLAG_RING_MASK;
     dc->cring = (tb_flags & XTENSA_TBFLAG_EXCM) ? 0 : dc->ring;
@@ -1174,14 +1154,14 @@ static void xtensa_tr_tb_start(DisasContextBase *dcbase, CPUState *cpu)
 
 static void xtensa_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
 {
-    tcg_gen_insn_start(dcbase->pc_next);
+    tcg_gen_insn_start(dcbase->pc_next, 0, 0);
 }
 
 static void xtensa_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
     CPUXtensaState *env = cpu_env(cpu);
-    target_ulong page_start;
+    vaddr page_start;
 
     /* These two conditions only apply to the first insn in the TB,
        but this is the first TranslateOps hook that allows exiting.  */
@@ -1203,10 +1183,6 @@ static void xtensa_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
             gen_debug_exception(dc, DEBUGCAUSE_IC);
         }
         gen_set_label(label);
-    }
-
-    if (dc->debug) {
-        gen_ibreak_check(env, dc);
     }
 
     disas_xtensa_insn(env, dc);
@@ -1239,34 +1215,26 @@ static void xtensa_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
     }
 }
 
-static void xtensa_tr_disas_log(const DisasContextBase *dcbase,
-                                CPUState *cpu, FILE *logfile)
-{
-    fprintf(logfile, "IN: %s\n", lookup_symbol(dcbase->pc_first));
-    target_disas(logfile, cpu, dcbase->pc_first, dcbase->tb->size);
-}
-
 static const TranslatorOps xtensa_translator_ops = {
     .init_disas_context = xtensa_tr_init_disas_context,
     .tb_start           = xtensa_tr_tb_start,
     .insn_start         = xtensa_tr_insn_start,
     .translate_insn     = xtensa_tr_translate_insn,
     .tb_stop            = xtensa_tr_tb_stop,
-    .disas_log          = xtensa_tr_disas_log,
 };
 
-void gen_intermediate_code(CPUState *cpu, TranslationBlock *tb, int *max_insns,
-                           target_ulong pc, void *host_pc)
+void xtensa_translate_code(CPUState *cpu, TranslationBlock *tb,
+                           int *max_insns, vaddr pc, void *host_pc)
 {
     DisasContext dc = {};
     translator_loop(cpu, tb, max_insns, pc, host_pc,
-                    &xtensa_translator_ops, &dc.base);
+                    &xtensa_translator_ops, &dc.base,
+                    TCG_TYPE_VA);
 }
 
 void xtensa_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 {
-    XtensaCPU *cpu = XTENSA_CPU(cs);
-    CPUXtensaState *env = &cpu->env;
+    CPUXtensaState *env = cpu_env(cs);
     xtensa_isa isa = env->config->isa;
     int i, j;
 
@@ -1422,11 +1390,11 @@ static void translate_bbi(DisasContext *dc, const OpcodeArg arg[],
                           const uint32_t par[])
 {
     TCGv_i32 tmp = tcg_temp_new_i32();
-#if TARGET_BIG_ENDIAN
-    tcg_gen_andi_i32(tmp, arg[0].in, 0x80000000u >> arg[1].imm);
-#else
-    tcg_gen_andi_i32(tmp, arg[0].in, 0x00000001u << arg[1].imm);
-#endif
+    if (TARGET_BIG_ENDIAN) {
+        tcg_gen_andi_i32(tmp, arg[0].in, 0x80000000u >> arg[1].imm);
+    } else {
+        tcg_gen_andi_i32(tmp, arg[0].in, 0x00000001u << arg[1].imm);
+    }
     gen_brcondi(dc, par[0], tmp, 0, arg[2].imm);
 }
 
@@ -2269,17 +2237,15 @@ static uint32_t test_exceptions_simcall(DisasContext *dc,
                                         const OpcodeArg arg[],
                                         const uint32_t par[])
 {
-    bool is_semi = semihosting_enabled(dc->cring != 0);
-#ifdef CONFIG_USER_ONLY
-    bool ill = true;
-#else
-    /* Between RE.2 and RE.3 simcall opcode's become nop for the hardware. */
-    bool ill = dc->config->hw_version <= 250002 && !is_semi;
-#endif
-    if (ill || !is_semi) {
-        qemu_log_mask(LOG_GUEST_ERROR, "SIMCALL but semihosting is disabled\n");
+#ifndef CONFIG_USER_ONLY
+    if (semihosting_enabled(dc->cring != 0)) {
+        return 0;
     }
-    return ill ? XTENSA_OP_ILL : 0;
+#endif
+    qemu_log_mask(LOG_GUEST_ERROR, "SIMCALL but semihosting is disabled\n");
+
+    /* Between RE.2 and RE.3 simcall opcode's become nop for the hardware. */
+    return dc->config->hw_version <= 250002 ? XTENSA_OP_ILL : 0;
 }
 
 static void translate_simcall(DisasContext *dc, const OpcodeArg arg[],

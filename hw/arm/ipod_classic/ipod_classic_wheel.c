@@ -33,10 +33,12 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "system/physmem.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
+#include "ui/input.h"
 #include "hw/arm/ipod_classic/ipod_classic_wheel.h"
 
 /*
@@ -270,7 +272,7 @@ static bool wheel_guest_idle(IPodClassicWheelState *s)
     if (!s->state_block) {
         return true;
     }
-    cpu_physical_memory_read(s->state_block + 0x18, w, sizeof(w));
+    physical_memory_read(s->state_block + 0x18, w, sizeof(w));
     memcpy(s->last_block, w, sizeof(w));
     if (s->last_packet) {
         /*
@@ -407,8 +409,7 @@ static void wheel_tick(void *opaque)
 /* ------------------------------------------------------------------ */
 
 /*
- * The same keys as the iPod-Video machine (hw/arm/ipod_video/ipod_video.c),
- * so that one habit drives both:
+ * The keys:
  *
  *     q / e   turn the wheel anticlockwise / clockwise
  *     enter   SELECT, the centre button
@@ -416,8 +417,9 @@ static void wheel_tick(void *opaque)
  *     a / d   previous / next  (LEFT / RIGHT, the |<< and >>| buttons)
  *     s       PLAY / PAUSE
  *
- * Raw PC scancodes, which is what qemu_add_kbd_event_handler delivers; bit 7
- * set means the key came back up.
+ * Raw PC scancodes, which for these keys are also the Linux keycodes the
+ * input layer passes in evt->key.key; evt->key.down says when the key came
+ * back up.
  */
 #define KEY_Q       0x10
 #define KEY_W       0x11
@@ -470,30 +472,48 @@ static void wheel_button(IPodClassicWheelState *s, uint32_t bit, bool pressed)
  * button is SELECT and the right button is MENU. Registered as an absolute pointer so SDL forwards
  * events without grabbing the host cursor; the position is ignored.
  */
-static void wheel_mouse_event(void *opaque, int dx, int dy, int dz,
-                              int buttons_state)
+static void wheel_mouse_event(DeviceState *dev, QemuConsole *src,
+                              QemuInputEvent *evt)
 {
-    IPodClassicWheelState *s = opaque;
-    static const struct { int mouse; uint32_t wheel; } map[] = {
-        { MOUSE_EVENT_LBUTTON, S5L8702_WHEEL_BTN_SELECT },
-        { MOUSE_EVENT_RBUTTON, S5L8702_WHEEL_BTN_MENU },
-    };
+    IPodClassicWheelState *s = IPOD_CLASSIC_WHEEL(dev);
 
-    if (dz) {
-        wheel_turn(s, dz * (int32_t)s->key_step);
+    if (evt->type != INPUT_EVENT_KIND_BTN) {
+        return;
     }
-    for (int i = 0; i < ARRAY_SIZE(map); i++) {
-        bool down = buttons_state & map[i].mouse;
-        if (down != !!(s->buttons & map[i].wheel)) {
-            wheel_button(s, map[i].wheel, down);
+    switch (evt->btn.button) {
+    case INPUT_BUTTON_LEFT:
+        wheel_button(s, S5L8702_WHEEL_BTN_SELECT, evt->btn.down);
+        break;
+    case INPUT_BUTTON_RIGHT:
+        wheel_button(s, S5L8702_WHEEL_BTN_MENU, evt->btn.down);
+        break;
+    case INPUT_BUTTON_WHEEL_UP:
+        if (evt->btn.down) {
+            wheel_turn(s, -(int32_t)s->key_step);
         }
+        break;
+    case INPUT_BUTTON_WHEEL_DOWN:
+        if (evt->btn.down) {
+            wheel_turn(s, (int32_t)s->key_step);
+        }
+        break;
+    default:
+        break;
     }
 }
 
-static void wheel_key_event(void *opaque, int keycode)
+static const QemuInputHandler wheel_mouse_handler = {
+    .name  = "iPod click wheel",
+    .mask  = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_ABS,
+    .event = wheel_mouse_event,
+};
+
+static void wheel_key_event(DeviceState *dev, QemuConsole *src,
+                            QemuInputEvent *evt)
 {
-    IPodClassicWheelState *s = opaque;
-    bool released = (keycode & 0x80) != 0;
+    IPodClassicWheelState *s = IPOD_CLASSIC_WHEEL(dev);
+    bool released = !evt->key.down;
+    int keycode = evt->key.key;
     uint32_t bit;
 
     if (wheel_trace_on() && wheeltrace >= 2) {
@@ -501,7 +521,7 @@ static void wheel_key_event(void *opaque, int keycode)
                 qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL), keycode);
     }
 
-    switch (keycode & 0x7f) {
+    switch (keycode) {
     case KEY_ENTER: bit = S5L8702_WHEEL_BTN_SELECT; break;
     case KEY_W:     bit = S5L8702_WHEEL_BTN_MENU;   break;
     case KEY_A:     bit = S5L8702_WHEEL_BTN_LEFT;   break;
@@ -516,7 +536,7 @@ static void wheel_key_event(void *opaque, int keycode)
          * "up", and stepping on both edges would double every movement.
          */
         if (!released) {
-            wheel_turn(s, ((keycode & 0x7f) == KEY_E)
+            wheel_turn(s, (keycode == KEY_E)
                           ? (int32_t)s->key_step : -(int32_t)s->key_step);
         }
         return;
@@ -527,6 +547,12 @@ static void wheel_key_event(void *opaque, int keycode)
 
     wheel_button(s, bit, !released);
 }
+
+static const QemuInputHandler wheel_key_handler = {
+    .name  = "iPod click wheel keys",
+    .mask  = INPUT_EVENT_MASK_KEY,
+    .event = wheel_key_event,
+};
 
 /* ------------------------------------------------------------------ */
 /* MMIO                                                               */
@@ -723,8 +749,9 @@ static void ipod_classic_wheel_realize(DeviceState *dev, Error **errp)
                                    S5L8702_WHEEL_STATE_BLOCK, 0, INT_MAX);
 
     s->tick = timer_new_ns(QEMU_CLOCK_VIRTUAL, wheel_tick, s);
-    qemu_add_kbd_event_handler(wheel_key_event, s);
-    qemu_add_mouse_event_handler(wheel_mouse_event, s, 1, "iPod click wheel");
+    s->kbd = qemu_input_handler_register(dev, &wheel_key_handler);
+    qemu_input_handler_activate(s->kbd);
+    s->mouse = qemu_input_handler_register(dev, &wheel_mouse_handler);
 }
 
 /*
@@ -782,13 +809,13 @@ static const VMStateDescription vmstate_ipod_classic_wheel = {
     },
 };
 
-static void ipod_classic_wheel_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_wheel_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 click wheel";
     dc->realize = ipod_classic_wheel_realize;
-    dc->reset = ipod_classic_wheel_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_wheel_reset);
     dc->vmsd = &vmstate_ipod_classic_wheel;
     dc->user_creatable = false;
 }

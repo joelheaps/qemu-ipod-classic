@@ -10,7 +10,7 @@
 #define HW_ARM_IPOD_CLASSIC_H
 
 #include "exec/hwaddr.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/intc/pl192.h"
 #include "hw/arm/boot.h"
 #include "ui/console.h"
@@ -99,9 +99,9 @@
 #define VIC0_MEM_BASE     0x38E00000   /* VIC_BASE */
 #define VIC1_MEM_BASE     0x38E01000
 /*
- * Sits right behind the two VICs. The iPod Touch machines call it "edgeic"
- * and back it with plain RAM rather than modelling it; Rockbox's bootloader
- * writes to +0x08 early on, so we need at least that much.
+ * Sits right behind the two VICs. It is backed by plain RAM rather than
+ * modelled; Rockbox's bootloader writes to +0x08 early on, so we need at
+ * least that much.
  */
 #define EDGEIC_MEM_BASE   0x38E02000
 #define EDGEIC_MEM_SIZE   0x1000

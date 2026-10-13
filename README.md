@@ -16,7 +16,6 @@ Firmware images can be found at [The Apple Wiki](<https://theapplewiki.com/wiki/
 | Device | Path | Reference |
 | -- | -- | -- |
 | Classic 6G | Keep the `.ipsw` (it also builds the disk). Extract `osos` from it, then have the device decrypt it with its own GID key under emCORE (1.2 s over USB) | [`docs/ipod/how-to/decrypt-classic-firmware.md`](docs/ipod/how-to/decrypt-classic-firmware.md) |
-| Video 5G | Unencrypted; dump the firmware partition (`tools/ipod_video/dump-firmware.ps1`) from a Rockbox dual-boot iPod | [`docs/ipod/how-to/run-an-ipod-video.md`](docs/ipod/how-to/run-an-ipod-video.md) |
 
 ## Building and running
 
@@ -138,9 +137,7 @@ The disk end-to-end tests (`tools/ipod_classic/tests/test_make_disk.py`) require
 | -- | -- | -- |
 | How-to | [`docs/ipod/how-to/decrypt-classic-firmware.md`](docs/ipod/how-to/decrypt-classic-firmware.md) | `.ipsw` to `osos_decrypted.bin` with emCORE |
 | How-to | [`docs/ipod/how-to/debug-a-classic-guest.md`](docs/ipod/how-to/debug-a-classic-guest.md) | Boot, screenshots, keys, memory, gdb, pctrace, audio capture, snapshots |
-| How-to | [`docs/ipod/how-to/run-an-ipod-video.md`](docs/ipod/how-to/run-an-ipod-video.md) | 5G firmware dump, disk build, boot, evidence scripts |
 | Reference | [`hw/arm/ipod_classic/README.md`](hw/arm/ipod_classic/README.md) | S5L8702 memory map, device models, audio and video pipelines, environment variables, snapshot contract |
-| Reference | [`hw/arm/ipod_video/README.md`](hw/arm/ipod_video/README.md) | PP5022 memory map, BCM/VideoCore interface, assumptions and deviations |
 | Reference | [`docs/ipod/classic6g-firmware.md`](docs/ipod/classic6g-firmware.md) | `.ipsw`/`]ih[`/IM3 formats, emCORE decrypt, NOR layout, what cannot be dumped |
 | Reference | [`tools/README.md`](tools/README.md) | Tools in this tree |
 
@@ -148,9 +145,7 @@ The disk end-to-end tests (`tools/ipod_classic/tests/test_make_disk.py`) require
 
 Forked from [davidmonterocrespo24/qemu-ipod-classic](https://github.com/davidmonterocrespo24/qemu-ipod-classic), itself a fork of [devos50/qemu-ios](https://github.com/devos50/qemu-ios) (QEMU 8.2.0, branch `ipod_touch_2g`), which emulates the **iPod Touch 1G and 2G**.
 
-- [Running the iPod Touch 1G](https://devos50.github.io/blog/2022/ipod-touch-qemu-pt2/) and the [technical write-up](https://devos50.github.io/blog/2022/ipod-touch-qemu/).
-- [Running the iPod Touch 2G](https://github.com/devos50/qemu-ios/blob/ipod_touch_2g/RUNNING.md).
 
 QEMU's own documentation is in [`docs/`](docs/).
 
-This work also depends on: **Rockbox** (register-level drivers for both devices: `firmware/target/arm/s5l8702/` and `firmware/export/s5l87xx.h` for the classic, `firmware/target/arm/ipod/` and `pp5020.h` for the 5G), **iPodLinux** (`ipodloader2/ipodhw.c`, the SysInfo block), **ipodpatcher** (the dual-boot layout) and **[freemyipod.org](https://freemyipod.org/wiki/Classic_6G)** (emCORE, and a QEMU model of the S5L8702 in `freemyipod/qemu@s5l8702-dev`).
+This work also depends on: **Rockbox** (register-level drivers: `firmware/target/arm/s5l8702/` and `firmware/export/s5l87xx.h`), **iPodLinux** (`ipodloader2/ipodhw.c`, the SysInfo block), **ipodpatcher** (the dual-boot layout) and **[freemyipod.org](https://freemyipod.org/wiki/Classic_6G)** (emCORE, and a QEMU model of the S5L8702 in `freemyipod/qemu@s5l8702-dev`).

@@ -10,15 +10,18 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "exec/target_page.h"
 #include "qapi/error.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/hyperv/hyperv.h"
 #include "hw/hyperv/vmbus.h"
 #include "hw/hyperv/vmbus-bridge.h"
-#include "hw/sysbus.h"
-#include "cpu.h"
+#include "hw/core/sysbus.h"
+#include "exec/cpu-common.h"
+#include "system/kvm.h"
+#include "system/physmem.h"
 #include "trace.h"
 
 enum {
@@ -246,6 +249,12 @@ struct VMBus {
      * interrupt page
      */
     EventNotifier notifier;
+
+    /*
+     * Notifier to inform when vmfd is changed as a part of confidential guest
+     * reset mechanism.
+     */
+    NotifierWithReturn vmbus_vmfd_change_notifier;
 };
 
 static bool gpadl_full(VMBusGpadl *gpadl)
@@ -526,7 +535,7 @@ static const VMStateDescription vmstate_gpadl = {
     .name = "vmbus/gpadl",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(id, VMBusGpadl),
         VMSTATE_UINT32(child_relid, VMBusGpadl),
         VMSTATE_UINT32(num_gfns, VMBusGpadl),
@@ -742,7 +751,7 @@ static int vmbus_channel_notify_guest(VMBusChannel *chan)
         return hyperv_set_event_flag(chan->notify_route, chan->id);
     }
 
-    int_map = cpu_physical_memory_map(addr, &len, 1);
+    int_map = physical_memory_map(addr, &len, 1);
     if (len != TARGET_PAGE_SIZE / 2) {
         res = -ENXIO;
         goto unmap;
@@ -756,7 +765,7 @@ static int vmbus_channel_notify_guest(VMBusChannel *chan)
     }
 
 unmap:
-    cpu_physical_memory_unmap(int_map, len, 1, dirty);
+    physical_memory_unmap(int_map, len, 1, dirty);
     return res;
 }
 
@@ -1423,7 +1432,7 @@ static void open_channel(VMBusChannel *chan)
         goto put_gpadl;
     }
 
-    if (event_notifier_init(&chan->notifier, 0)) {
+    if (event_notifier_init(&chan->notifier, 0) < 0) {
         goto put_gpadl;
     }
 
@@ -1489,7 +1498,7 @@ static const VMStateDescription vmstate_channel = {
     .version_id = 0,
     .minimum_version_id = 0,
     .post_load = channel_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(id, VMBusChannel),
         VMSTATE_UINT16(subchan_idx, VMBusChannel),
         VMSTATE_UINT32(open_id, VMBusChannel),
@@ -1516,14 +1525,12 @@ static VMBusChannel *find_channel(VMBus *vmbus, uint32_t id)
 static int enqueue_incoming_message(VMBus *vmbus,
                                     const struct hyperv_post_message_input *msg)
 {
-    int ret = 0;
     uint8_t idx, prev_size;
 
-    qemu_mutex_lock(&vmbus->rx_queue_lock);
+    QEMU_LOCK_GUARD(&vmbus->rx_queue_lock);
 
     if (vmbus->rx_queue_size == HV_MSG_QUEUE_LEN) {
-        ret = -ENOBUFS;
-        goto out;
+        return -ENOBUFS;
     }
 
     prev_size = vmbus->rx_queue_size;
@@ -1535,9 +1542,7 @@ static int enqueue_incoming_message(VMBus *vmbus,
     if (!prev_size) {
         vmbus_resched(vmbus);
     }
-out:
-    qemu_mutex_unlock(&vmbus->rx_queue_lock);
-    return ret;
+    return 0;
 }
 
 static uint16_t vmbus_recv_message(const struct hyperv_post_message_input *msg,
@@ -1874,7 +1879,7 @@ static void send_create_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
+    g_assert_not_reached();
 }
 
 static bool complete_create_gpadl(VMBus *vmbus)
@@ -1889,8 +1894,7 @@ static bool complete_create_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
-    return false;
+    g_assert_not_reached();
 }
 
 static void handle_gpadl_teardown(VMBus *vmbus,
@@ -1931,7 +1935,7 @@ static void send_teardown_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
+    g_assert_not_reached();
 }
 
 static bool complete_teardown_gpadl(VMBus *vmbus)
@@ -1946,8 +1950,7 @@ static bool complete_teardown_gpadl(VMBus *vmbus)
         }
     }
 
-    assert(false);
-    return false;
+    g_assert_not_reached();
 }
 
 static void handle_open_channel(VMBus *vmbus, vmbus_message_open_channel *msg,
@@ -1996,7 +1999,7 @@ static void send_open_channel(VMBus *vmbus)
         }
     }
 
-    assert(false);
+    g_assert_not_reached();
 }
 
 static bool complete_open_channel(VMBus *vmbus)
@@ -2020,8 +2023,7 @@ static bool complete_open_channel(VMBus *vmbus)
         }
     }
 
-    assert(false);
-    return false;
+    g_assert_not_reached();
 }
 
 static void vdev_reset_on_close(VMBusDevice *vdev)
@@ -2076,7 +2078,6 @@ static void send_unload(VMBus *vmbus)
     qemu_mutex_unlock(&vmbus->rx_queue_lock);
 
     post_msg(vmbus, &msg, sizeof(msg));
-    return;
 }
 
 static bool complete_unload(VMBus *vmbus)
@@ -2092,10 +2093,10 @@ static void process_message(VMBus *vmbus)
     void *msgdata;
     uint32_t msglen;
 
-    qemu_mutex_lock(&vmbus->rx_queue_lock);
+    QEMU_LOCK_GUARD(&vmbus->rx_queue_lock);
 
     if (!vmbus->rx_queue_size) {
-        goto unlock;
+        return;
     }
 
     hv_msg = &vmbus->rx_queue[vmbus->rx_queue_head];
@@ -2144,8 +2145,6 @@ out:
     vmbus->rx_queue_head %= HV_MSG_QUEUE_LEN;
 
     vmbus_resched(vmbus);
-unlock:
-    qemu_mutex_unlock(&vmbus->rx_queue_lock);
 }
 
 static const struct {
@@ -2245,7 +2244,7 @@ static void vmbus_signal_event(EventNotifier *e)
 
     addr = vmbus->int_page_gpa + TARGET_PAGE_SIZE / 2;
     len = TARGET_PAGE_SIZE / 2;
-    int_map = cpu_physical_memory_map(addr, &len, 1);
+    int_map = physical_memory_map(addr, &len, 1);
     if (len != TARGET_PAGE_SIZE / 2) {
         goto unmap;
     }
@@ -2261,7 +2260,7 @@ static void vmbus_signal_event(EventNotifier *e)
     }
 
 unmap:
-    cpu_physical_memory_unmap(int_map, len, 1, is_dirty);
+    physical_memory_unmap(int_map, len, 1, is_dirty);
 }
 
 static void vmbus_dev_realize(DeviceState *dev, Error **errp)
@@ -2349,20 +2348,46 @@ static void vmbus_dev_unrealize(DeviceState *dev)
     free_channels(vdev);
 }
 
-static Property vmbus_dev_props[] = {
+/*
+ * If the KVM fd changes because of VM reset in confidential guests,
+ * reassociate event fd with the new KVM fd.
+ */
+static int vmbus_handle_vmfd_change(NotifierWithReturn *notifier,
+                                    void *data, Error** errp)
+{
+    VMBus *vmbus = container_of(notifier, VMBus,
+                                vmbus_vmfd_change_notifier);
+    int ret = 0;
+
+    /* we are not interested in pre vmfd change notification */
+    if (((VmfdChangeNotifier *)data)->pre) {
+        return 0;
+    }
+
+    ret = hyperv_set_event_flag_handler(VMBUS_EVENT_CONNECTION_ID,
+                                            &vmbus->notifier);
+    /* if we are only using userland event handler, it may already exist */
+    if (ret != 0 && ret != -EEXIST) {
+        error_setg(errp, "hyperv set event handler failed with %d", ret);
+    }
+
+    trace_vmbus_handle_vmfd_change();
+    return ret;
+}
+
+static const Property vmbus_dev_props[] = {
     DEFINE_PROP_UUID("instanceid", VMBusDevice, instanceid),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 
-static void vmbus_dev_class_init(ObjectClass *klass, void *data)
+static void vmbus_dev_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *kdev = DEVICE_CLASS(klass);
     device_class_set_props(kdev, vmbus_dev_props);
     kdev->bus_type = TYPE_VMBUS;
     kdev->realize = vmbus_dev_realize;
     kdev->unrealize = vmbus_dev_unrealize;
-    kdev->reset = vmbus_dev_reset;
+    device_class_set_legacy_reset(kdev, vmbus_dev_reset);
 }
 
 static void vmbus_dev_instance_init(Object *obj)
@@ -2380,7 +2405,7 @@ const VMStateDescription vmstate_vmbus_dev = {
     .name = TYPE_VMBUS_DEVICE,
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(instanceid.data, VMBusDevice, 16),
         VMSTATE_UINT16(num_channels, VMBusDevice),
         VMSTATE_STRUCT_VARRAY_POINTER_UINT16(channels, VMBusDevice,
@@ -2419,7 +2444,7 @@ static void vmbus_realize(BusState *bus, Error **errp)
     }
 
     ret = event_notifier_init(&vmbus->notifier, 0);
-    if (ret != 0) {
+    if (ret < 0) {
         error_setg(errp, "event notifier failed to init with %d", ret);
         goto remove_msg_handler;
     }
@@ -2431,6 +2456,9 @@ static void vmbus_realize(BusState *bus, Error **errp)
         error_setg(errp, "hyperv set event handler failed with %d", ret);
         goto clear_event_notifier;
     }
+
+    vmbus->vmbus_vmfd_change_notifier.notify = vmbus_handle_vmfd_change;
+    kvm_vmfd_add_change_notifier(&vmbus->vmbus_vmfd_change_notifier);
 
     return;
 
@@ -2453,9 +2481,9 @@ static void vmbus_unrealize(BusState *bus)
     qemu_mutex_destroy(&vmbus->rx_queue_lock);
 }
 
-static void vmbus_reset(BusState *bus)
+static void vmbus_reset_hold(Object *obj, ResetType type)
 {
-    vmbus_deinit(VMBUS(bus));
+    vmbus_deinit(VMBUS(obj));
 }
 
 static char *vmbus_get_dev_path(DeviceState *dev)
@@ -2473,15 +2501,16 @@ static char *vmbus_get_fw_dev_path(DeviceState *dev)
     return g_strdup_printf("%s@%s", qdev_fw_name(dev), uuid);
 }
 
-static void vmbus_class_init(ObjectClass *klass, void *data)
+static void vmbus_class_init(ObjectClass *klass, const void *data)
 {
     BusClass *k = BUS_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     k->get_dev_path = vmbus_get_dev_path;
     k->get_fw_dev_path = vmbus_get_fw_dev_path;
     k->realize = vmbus_realize;
     k->unrealize = vmbus_unrealize;
-    k->reset = vmbus_reset;
+    rc->phases.hold = vmbus_reset_hold;
 }
 
 static int vmbus_pre_load(void *opaque)
@@ -2549,7 +2578,7 @@ static const VMStateDescription vmstate_post_message_input = {
     .name = "vmbus/hyperv_post_message_input",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /*
          * skip connection_id and message_type as they are validated before
          * queueing and ignored on dequeueing
@@ -2572,7 +2601,7 @@ static const VMStateDescription vmstate_rx_queue = {
     .version_id = 0,
     .minimum_version_id = 0,
     .needed = vmbus_rx_queue_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(rx_queue_head, VMBus),
         VMSTATE_UINT8(rx_queue_size, VMBus),
         VMSTATE_STRUCT_ARRAY(rx_queue, VMBus,
@@ -2589,7 +2618,7 @@ static const VMStateDescription vmstate_vmbus = {
     .minimum_version_id = 0,
     .pre_load = vmbus_pre_load,
     .post_load = vmbus_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(state, VMBus),
         VMSTATE_UINT32(version, VMBus),
         VMSTATE_UINT32(target_vp, VMBus),
@@ -2598,7 +2627,7 @@ static const VMStateDescription vmstate_vmbus = {
                          vmstate_gpadl, VMBusGpadl, link),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription * []) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_rx_queue,
         NULL
     }
@@ -2630,6 +2659,12 @@ static void vmbus_bridge_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    if (!hyperv_are_vmbus_recommended_features_enabled()) {
+        warn_report("VMBus enabled without the recommended set of Hyper-V features: "
+                    "hv-stimer, hv-vapic and hv-runtime. "
+                    "Some Windows versions might not boot or enable the VMBus device");
+    }
+
     bridge->bus = VMBUS(qbus_new(TYPE_VMBUS, dev, "vmbus"));
 }
 
@@ -2643,18 +2678,17 @@ static const VMStateDescription vmstate_vmbus_bridge = {
     .name = TYPE_VMBUS_BRIDGE,
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_POINTER(bus, VMBusBridge, vmstate_vmbus, VMBus),
         VMSTATE_END_OF_LIST()
     },
 };
 
-static Property vmbus_bridge_props[] = {
+static const Property vmbus_bridge_props[] = {
     DEFINE_PROP_UINT8("irq", VMBusBridge, irq, 7),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void vmbus_bridge_class_init(ObjectClass *klass, void *data)
+static void vmbus_bridge_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
     SysBusDeviceClass *sk = SYS_BUS_DEVICE_CLASS(klass);

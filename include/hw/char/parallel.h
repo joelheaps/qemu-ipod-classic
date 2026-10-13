@@ -1,10 +1,9 @@
 #ifndef HW_PARALLEL_H
 #define HW_PARALLEL_H
 
-#include "exec/ioport.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "hw/isa/isa.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "chardev/char-fe.h"
 #include "chardev/char.h"
 
@@ -16,13 +15,12 @@ typedef struct ParallelState {
     uint8_t control;
     qemu_irq irq;
     int irq_pending;
-    CharBackend chr;
+    CharFrontend chr;
     int hw_driver;
     int epp_timeout;
     uint32_t last_read_offset; /* For debugging */
     /* Memory-mapped interface */
     int it_shift;
-    PortioList portio_list;
 } ParallelState;
 
 void parallel_hds_isa_init(ISABus *bus, int n);

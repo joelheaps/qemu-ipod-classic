@@ -5,8 +5,8 @@
  * two load addresses seen in src=LO-HI before the run started and ended, so an
  * offline walk (tools/ipod_classic/prov_walk.py) can follow "who wrote this
  * surface, from where did it read". Consecutive stores from one PC to adjacent
- * addresses collapse into one run. Values are not available to 8.2 memory
- * callbacks; take final contents from a memory dump instead.
+ * addresses collapse into one run. Stored values are not read here; take final
+ * contents from a memory dump instead.
  *
  *   -plugin libprovtrace.so,out=FILE,dst=0xLO-0xHI[,src=0xLO-0xHI][,start=0xPC][,skip=0xPC]...
  *
@@ -94,7 +94,7 @@ static void start_cb(unsigned int cpu, void *udata)
     active = 1;
 }
 
-static void tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+static void tb_trans(struct qemu_plugin_tb *tb, void *userdata)
 {
     size_t n = qemu_plugin_tb_n_insns(tb);
     for (size_t i = 0; i < n; i++) {
@@ -109,7 +109,7 @@ static void tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
     }
 }
 
-static void exit_cb(qemu_plugin_id_t id, void *p)
+static void exit_cb(void *p)
 {
     flush_run();
     fclose(out);
@@ -155,7 +155,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         return -1;
     }
     setvbuf(out, NULL, _IOFBF, 1 << 20);
-    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans, NULL);
     qemu_plugin_register_atexit_cb(id, exit_cb, NULL);
     return 0;
 }

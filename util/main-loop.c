@@ -26,10 +26,11 @@
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/timer.h"
-#include "sysemu/cpu-timers.h"
-#include "sysemu/replay.h"
+#include "system/cpu-timers.h"
+#include "exec/icount.h"
+#include "system/replay.h"
 #include "qemu/main-loop.h"
-#include "block/aio.h"
+#include "qemu/aio.h"
 #include "block/thread-pool.h"
 #include "qemu/error-report.h"
 #include "qemu/queue.h"
@@ -113,7 +114,10 @@ static int qemu_signal_init(Error **errp)
         return -errno;
     }
 
-    g_unix_set_fd_nonblocking(sigfd, true, NULL);
+    if (!qemu_set_blocking(sigfd, false, errp)) {
+        close(sigfd);
+        return -EINVAL;
+    }
 
     qemu_set_fd_handler(sigfd, sigfd_handler, NULL, (void *)(intptr_t)sigfd);
 
@@ -158,7 +162,7 @@ int qemu_init_main_loop(Error **errp)
     int ret;
     GSource *src;
 
-    init_clocks(qemu_timer_notify_cb);
+    qemu_init_clocks(qemu_timer_notify_cb);
 
     ret = qemu_signal_init(errp);
     if (ret) {
@@ -192,10 +196,7 @@ static void main_loop_update_params(EventLoopBase *base, Error **errp)
         return;
     }
 
-    aio_context_set_aio_params(qemu_aio_context, base->aio_max_batch, errp);
-    if (*errp) {
-        return;
-    }
+    aio_context_set_aio_params(qemu_aio_context, base->aio_max_batch);
 
     aio_context_set_thread_pool_params(qemu_aio_context, base->thread_pool_min,
                                        base->thread_pool_max, errp);
@@ -215,21 +216,22 @@ static void main_loop_init(EventLoopBase *base, Error **errp)
     main_loop_update_params(base, errp);
 
     mloop = m;
-    return;
 }
 
-static bool main_loop_can_be_deleted(EventLoopBase *base)
+static bool main_loop_prepare_delete(EventLoopBase *base, Error **errp)
 {
+    error_setg(errp, "Deleting main loop '%s' is not supported",
+               object_get_canonical_path_component(OBJECT(base)));
     return false;
 }
 
-static void main_loop_class_init(ObjectClass *oc, void *class_data)
+static void main_loop_class_init(ObjectClass *oc, const void *class_data)
 {
     EventLoopBaseClass *bc = EVENT_LOOP_BASE_CLASS(oc);
 
     bc->init = main_loop_init;
     bc->update_params = main_loop_update_params;
-    bc->can_be_deleted = main_loop_can_be_deleted;
+    bc->prepare_delete = main_loop_prepare_delete;
 }
 
 static const TypeInfo main_loop_info = {
@@ -302,13 +304,13 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     glib_pollfds_fill(&timeout);
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     replay_mutex_unlock();
 
     ret = qemu_poll_ns((GPollFD *)gpollfds->data, gpollfds->len, timeout);
 
     replay_mutex_lock();
-    qemu_mutex_lock_iothread();
+    bql_lock();
 
     glib_pollfds_poll();
 
@@ -517,7 +519,7 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     poll_timeout_ns = qemu_soonest_timeout(poll_timeout_ns, timeout);
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
 
     replay_mutex_unlock();
 
@@ -525,7 +527,7 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     replay_mutex_lock();
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     if (g_poll_ret > 0) {
         for (i = 0; i < w->num; i++) {
             w->revents[i] = poll_fds[n_poll_fds + i].revents;

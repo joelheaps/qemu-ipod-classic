@@ -9,8 +9,8 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2c.h"
 
@@ -351,18 +351,17 @@ static const VMStateDescription vmstate_ipod_classic_i2c = {
     },
 };
 
-static Property ipod_classic_i2c_properties[] = {
+static const Property ipod_classic_i2c_properties[] = {
     DEFINE_PROP_UINT32("reset-con", IPodClassicI2CState, reset_con, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void ipod_classic_i2c_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_props(dc, ipod_classic_i2c_properties);
     dc->desc = "S5L8702 I2C master";
-    dc->reset = ipod_classic_i2c_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_i2c_reset);
     dc->vmsd = &vmstate_ipod_classic_i2c;
 }
 

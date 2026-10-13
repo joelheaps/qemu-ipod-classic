@@ -93,9 +93,6 @@ void net_tx_pkt_update_ip_hdr_checksum(struct NetTxPkt *pkt)
     uint16_t csum;
     assert(pkt);
 
-    pkt->l3_hdr.ip.ip_len = cpu_to_be16(pkt->payload_len +
-        pkt->vec[NET_TX_PKT_L3HDR_FRAG].iov_len);
-
     pkt->l3_hdr.ip.ip_sum = 0;
     csum = net_raw_checksum(pkt->l3_hdr.octets,
         pkt->vec[NET_TX_PKT_L3HDR_FRAG].iov_len);
@@ -117,7 +114,9 @@ void net_tx_pkt_update_ip_checksums(struct NetTxPkt *pkt)
 
     if (gso_type == VIRTIO_NET_HDR_GSO_TCPV4 ||
         gso_type == VIRTIO_NET_HDR_GSO_UDP) {
-        /* Calculate IP header checksum */
+        /* Set ip_len and calculate IP header checksum */
+        pkt->l3_hdr.ip.ip_len = cpu_to_be16(pkt->payload_len +
+            pkt->vec[NET_TX_PKT_L3HDR_FRAG].iov_len);
         net_tx_pkt_update_ip_hdr_checksum(pkt);
 
         /* Calculate IP pseudo header checksum */
@@ -578,7 +577,7 @@ static void net_tx_pkt_sendv(
 {
     NetClientState *nc = opaque;
 
-    if (qemu_get_using_vnet_hdr(nc->peer)) {
+    if (qemu_get_vnet_hdr_len(nc->peer)) {
         qemu_sendv_packet(nc, virt_iov, virt_iov_cnt);
     } else {
         qemu_sendv_packet(nc, iov, iov_cnt);
@@ -808,7 +807,7 @@ static bool net_tx_pkt_do_sw_fragmentation(struct NetTxPkt *pkt,
 
 bool net_tx_pkt_send(struct NetTxPkt *pkt, NetClientState *nc)
 {
-    bool offload = qemu_get_using_vnet_hdr(nc->peer);
+    bool offload = qemu_get_vnet_hdr_len(nc->peer);
     return net_tx_pkt_send_custom(pkt, offload, net_tx_pkt_sendv, nc);
 }
 
@@ -833,6 +832,7 @@ bool net_tx_pkt_send_custom(struct NetTxPkt *pkt, bool offload,
 
     if (offload || gso_type == VIRTIO_NET_HDR_GSO_NONE) {
         if (!offload && pkt->virt_hdr.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
+            pkt->virt_hdr.flags &= ~VIRTIO_NET_HDR_F_NEEDS_CSUM;
             net_tx_pkt_do_sw_csum(pkt, &pkt->vec[NET_TX_PKT_L2HDR_FRAG],
                                   pkt->payload_frags + NET_TX_PKT_PL_START_FRAG - 1,
                                   pkt->payload_len);

@@ -10,8 +10,8 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_classic/ipod_classic_timer.h"
 
@@ -465,11 +465,11 @@ static const VMStateDescription vmstate_ipod_classic_timer = {
     }
 };
 
-static void ipod_classic_timer_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = ipod_classic_timer_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_timer_reset);
     dc->vmsd = &vmstate_ipod_classic_timer;
     dc->desc = "S5L8702 timers";
 }

@@ -143,8 +143,7 @@
  *
  * THE INTERRUPT PATH IS ALREADY ARMED, and this was checked rather than hoped
  *
- * The lesson from the 5G (hw/arm/ipod_video/ipod_video_intc.c: HI_IRQ gating
- * the whole high bank) says raising a line proves nothing. Measured here:
+ * Raising a line proves nothing by itself. Measured here:
  * 0x08047a68 registers 0x080479a8 on IRQ 23, and VIC0 INTENABLE reads
  * 0x01A3010F with the machine running -- bit 23 set. The IRAM dispatcher
  * (0x22004DA0) reads both VICs with no cross-condition, takes the number from
@@ -158,7 +157,7 @@
 #define HW_ARM_IPOD_CLASSIC_WHEEL_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 #include "qemu/timer.h"
 
@@ -343,6 +342,8 @@ struct IPodClassicWheelState {
     uint32_t last_packet;   /* the event packet sent last, 0 before the first */
 
     QEMUTimer *tick;
+    struct QemuInputHandlerState *kbd;
+    struct QemuInputHandlerState *mouse;
     uint32_t key_step;
     int64_t tick_ns;
     int64_t untouch_ns;

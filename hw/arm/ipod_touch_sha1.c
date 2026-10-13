@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sha1.h"
+#include "system/address-spaces.h"
 #include "migration/vmstate.h"
 
 static uint64_t swapLong(uint64_t x) {
@@ -197,7 +198,7 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 				}
 				if (s->memory_mode) {
 					for (uint32_t i = 0; i < s->insize / 0x40; i++) {
-						cpu_physical_memory_read(s->memory_start + i * 0x40, blk, 0x40);
+						address_space_read(&address_space_memory, s->memory_start + i * 0x40, MEMTXATTRS_UNSPECIFIED, blk, 0x40);
 						sha1_compress(s, blk);
 					}
 				}
@@ -211,7 +212,7 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 				{
 					// we are in memory mode - gradually add the memory to the buffer
 					for(int i = 0; i < s->insize / 0x40; i++) {
-						cpu_physical_memory_read(s->memory_start + i * 0x40, s->buffer + s->buffer_ind, 0x40);
+						address_space_read(&address_space_memory, s->memory_start + i * 0x40, MEMTXATTRS_UNSPECIFIED, s->buffer + s->buffer_ind, 0x40);
 						s->buffer_ind += 0x40;
 					}
 					/*
@@ -291,7 +292,7 @@ static const VMStateDescription vmstate_ipod_touch_sha1 = {
     },
 };
 
-static void ipod_touch_sha1_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_sha1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

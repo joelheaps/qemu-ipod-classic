@@ -217,7 +217,7 @@ static int axp2xx_tx(I2CSlave *i2c, uint8_t data)
 static const VMStateDescription vmstate_axp2xx = {
     .name = TYPE_AXP2XX,
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(regs, AXP2xxI2CState, NR_REGS),
         VMSTATE_UINT8(ptr, AXP2xxI2CState),
         VMSTATE_UINT8(count, AXP2xxI2CState),
@@ -225,7 +225,7 @@ static const VMStateDescription vmstate_axp2xx = {
     }
 };
 
-static void axp2xx_class_init(ObjectClass *oc, void *data)
+static void axp2xx_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     I2CSlaveClass *isc = I2C_SLAVE_CLASS(oc);
@@ -247,7 +247,7 @@ static const TypeInfo axp2xx_info = {
     .abstract = true,
 };
 
-static void axp209_class_init(ObjectClass *oc, void *data)
+static void axp209_class_init(ObjectClass *oc, const void *data)
 {
     AXP2xxClass *sc = AXP2XX_CLASS(oc);
 
@@ -260,7 +260,7 @@ static const TypeInfo axp209_info = {
     .class_init = axp209_class_init
 };
 
-static void axp221_class_init(ObjectClass *oc, void *data)
+static void axp221_class_init(ObjectClass *oc, const void *data)
 {
     AXP2xxClass *sc = AXP2XX_CLASS(oc);
 

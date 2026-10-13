@@ -15,7 +15,8 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
-#include "xen_pt.h"
+#include "hw/xen/xen_pt.h"
+#include "hw/xen/xen_igd.h"
 #include "hw/xen/xen-legacy-backend.h"
 
 #define XEN_PT_MERGE_VALUE(value, data, val_mask) \
@@ -61,7 +62,7 @@ static int xen_pt_hide_dev_cap(const XenHostPCIDevice *d, uint8_t grp_id)
 /*   find emulate register group entry */
 XenPTRegGroup *xen_pt_find_reg_grp(XenPCIPassthroughState *s, uint32_t address)
 {
-    XenPTRegGroup *entry = NULL;
+    XenPTRegGroup *entry;
 
     /* find register group entry */
     QLIST_FOREACH(entry, &s->reg_grps, entries) {
@@ -79,7 +80,7 @@ XenPTRegGroup *xen_pt_find_reg_grp(XenPCIPassthroughState *s, uint32_t address)
 /* find emulate register entry */
 XenPTReg *xen_pt_find_reg(XenPTRegGroup *reg_grp, uint32_t address)
 {
-    XenPTReg *reg_entry = NULL;
+    XenPTReg *reg_entry;
     XenPTRegInfo *reg = NULL;
     uint32_t real_offset = 0;
 
@@ -291,7 +292,10 @@ static int xen_pt_header_type_reg_init(XenPCIPassthroughState *s,
                                        uint32_t *data)
 {
     /* read PCI_HEADER_TYPE */
-    *data = reg->init_val | 0x80;
+    *data = reg->init_val;
+    if ((PCI_DEVICE(s)->cap_present & QEMU_PCI_CAP_MULTIFUNCTION)) {
+        *data |= PCI_HEADER_TYPE_MULTI_FUNCTION;
+    }
     return 0;
 }
 
@@ -676,7 +680,7 @@ static XenPTRegInfo xen_pt_emu_reg_header0[] = {
         .size       = 1,
         .init_val   = 0x00,
         .ro_mask    = 0xFF,
-        .emu_mask   = 0x00,
+        .emu_mask   = PCI_HEADER_TYPE_MULTI_FUNCTION,
         .init       = xen_pt_header_type_reg_init,
         .u.b.read   = xen_pt_byte_reg_read,
         .u.b.write  = xen_pt_byte_reg_write,

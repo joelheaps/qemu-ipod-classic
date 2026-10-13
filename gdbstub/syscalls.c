@@ -7,15 +7,16 @@
  * Copyright (c) 2003-2005 Fabrice Bellard
  * Copyright (c) 2023 Linaro Ltd
  *
- * SPDX-License-Identifier: LGPL-2.0+
+ * SPDX-License-Identifier: LGPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "semihosting/semihost.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 #include "gdbstub/user.h"
 #include "gdbstub/syscalls.h"
+#include "gdbstub/commands.h"
 #include "trace.h"
 #include "internals.h"
 
@@ -126,7 +127,7 @@ void gdb_do_syscall(gdb_syscall_complete_cb cb, const char *fmt, ...)
             case 's':
                 i64 = va_arg(va, uint64_t);
                 i32 = va_arg(va, uint32_t);
-                p += snprintf(p, p_end - p, "%" PRIx64 "/%x" PRIx32, i64, i32);
+                p += snprintf(p, p_end - p, "%" PRIx64 "/%" PRIx32, i64, i32);
                 break;
             default:
             bad_format:
@@ -145,6 +146,42 @@ void gdb_do_syscall(gdb_syscall_complete_cb cb, const char *fmt, ...)
 }
 
 /*
+ * Map host error numbers to their GDB protocol counterparts.
+ * For the list of GDB File-I/O supported error numbers, please consult:
+ * https://sourceware.org/gdb/current/onlinedocs/gdb.html/Errno-Values.html
+ */
+int host_to_gdb_errno(int err)
+{
+#define E(X)  case E##X: return GDB_E##X
+    switch (err) {
+    E(PERM);
+    E(NOENT);
+    E(INTR);
+    E(IO);
+    E(BADF);
+    E(ACCES);
+    E(FAULT);
+    E(BUSY);
+    E(EXIST);
+    E(NODEV);
+    E(NOTDIR);
+    E(ISDIR);
+    E(INVAL);
+    E(NFILE);
+    E(MFILE);
+    E(FBIG);
+    E(NOSPC);
+    E(SPIPE);
+    E(ROFS);
+    E(NOSYS);
+    E(NAMETOOLONG);
+    default:
+        return GDB_EUNKNOWN;
+    }
+#undef E
+}
+
+/*
  * GDB Command Handlers
  */
 
@@ -154,9 +191,9 @@ void gdb_handle_file_io(GArray *params, void *user_ctx)
         uint64_t ret;
         int err;
 
-        ret = get_param(params, 0)->val_ull;
+        ret = gdb_get_cmd_param(params, 0)->val_ull;
         if (params->len >= 2) {
-            err = get_param(params, 1)->val_ull;
+            err = gdb_get_cmd_param(params, 1)->val_ull;
         } else {
             err = 0;
         }
@@ -196,7 +233,7 @@ void gdb_handle_file_io(GArray *params, void *user_ctx)
         gdbserver_syscall_state.current_syscall_cb = NULL;
     }
 
-    if (params->len >= 3 && get_param(params, 2)->opcode == (uint8_t)'C') {
+    if (params->len >= 3 && gdb_get_cmd_param(params, 2)->opcode == (uint8_t)'C') {
         gdb_put_packet("T02");
         return;
     }

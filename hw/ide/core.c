@@ -24,7 +24,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/isa/isa.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
@@ -32,16 +32,16 @@
 #include "qemu/timer.h"
 #include "qemu/hw-version.h"
 #include "qemu/memalign.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/blockdev.h"
-#include "sysemu/dma.h"
+#include "system/system.h"
+#include "system/blockdev.h"
+#include "system/dma.h"
 #include "hw/block/block.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
-#include "sysemu/replay.h"
-#include "sysemu/runstate.h"
-#include "hw/ide/internal.h"
+#include "system/replay.h"
+#include "system/runstate.h"
+#include "ide-internal.h"
 #include "trace.h"
 
 /* These values were based on a Seagate ST3500418AS but have been modified
@@ -138,11 +138,12 @@ static void ide_identify(IDEState *s)
     memset(p, 0, sizeof(s->identify_data));
 
     put_le16(p + 0, 0x0040);
+    /* Words 1, 3 and 6 describe the default translation (ATA-5 8.16.8) */
     put_le16(p + 1, s->cylinders);
-    put_le16(p + 3, s->heads);
-    put_le16(p + 4, 512 * s->sectors); /* XXX: retired, remove ? */
+    put_le16(p + 3, s->drive_heads);
+    put_le16(p + 4, 512 * s->drive_sectors); /* XXX: retired, remove ? */
     put_le16(p + 5, 512); /* XXX: retired, remove ? */
-    put_le16(p + 6, s->sectors);
+    put_le16(p + 6, s->drive_sectors);
     padstr((char *)(p + 10), s->drive_serial_str, 20); /* serial number */
     put_le16(p + 20, 3); /* XXX: retired, remove ? */
     put_le16(p + 21, 512); /* cache size in sectors */
@@ -332,8 +333,8 @@ static void ide_cfata_identify(IDEState *s)
 
     put_le16(p + 0, 0x848a);                    /* CF Storage Card signature */
     put_le16(p + 1, s->cylinders);              /* Default cylinders */
-    put_le16(p + 3, s->heads);                  /* Default heads */
-    put_le16(p + 6, s->sectors);                /* Default sectors per track */
+    put_le16(p + 3, s->drive_heads);            /* Default heads */
+    put_le16(p + 6, s->drive_sectors);          /* Default sectors per track */
     /* *(p + 7) := nb_sectors >> 16 -- see ide_cfata_identify_size */
     /* *(p + 8) := nb_sectors       -- see ide_cfata_identify_size */
     padstr((char *)(p + 10), s->drive_serial_str, 20); /* serial number */
@@ -420,24 +421,15 @@ typedef struct TrimAIOCB {
     QEMUBH *bh;
     int ret;
     QEMUIOVector *qiov;
-    BlockAIOCB *aiocb;
-    int i, j;
+    bool canceled;
 } TrimAIOCB;
 
 static void trim_aio_cancel(BlockAIOCB *acb)
 {
     TrimAIOCB *iocb = container_of(acb, TrimAIOCB, common);
 
-    /* Exit the loop so ide_issue_trim_cb will not continue  */
-    iocb->j = iocb->qiov->niov - 1;
-    iocb->i = (iocb->qiov->iov[iocb->j].iov_len / 8) - 1;
-
-    iocb->ret = -ECANCELED;
-
-    if (iocb->aiocb) {
-        blk_aio_cancel_async(iocb->aiocb);
-        iocb->aiocb = NULL;
-    }
+    /* Exit the loop so ide_trim_co_entry will not continue */
+    iocb->canceled = true;
 }
 
 static const AIOCBInfo trim_aiocb_info = {
@@ -456,65 +448,64 @@ static void ide_trim_bh_cb(void *opaque)
     iocb->bh = NULL;
     qemu_aio_unref(iocb);
 
-    /* Paired with an increment in ide_issue_trim() */
-    blk_dec_in_flight(blk);
+    /* Paired with blk_co_start_request in ide_trim_co_entry() */
+    blk_end_request(blk);
 }
 
-static void ide_issue_trim_cb(void *opaque, int ret)
+static void coroutine_fn ide_trim_co_entry(void *opaque)
 {
     TrimAIOCB *iocb = opaque;
     IDEState *s = iocb->s;
+    int i, j;
+    int ret;
 
-    if (iocb->i >= 0) {
-        if (ret >= 0) {
-            block_acct_done(blk_get_stats(s->blk), &s->acct);
-        } else {
-            block_acct_failed(blk_get_stats(s->blk), &s->acct);
-        }
-    }
+    /* Paired with blk_end_request in ide_trim_bh_cb() */
+    blk_co_start_request(s->blk);
 
-    if (ret >= 0) {
-        while (iocb->j < iocb->qiov->niov) {
-            int j = iocb->j;
-            while (++iocb->i < iocb->qiov->iov[j].iov_len / 8) {
-                int i = iocb->i;
-                uint64_t *buffer = iocb->qiov->iov[j].iov_base;
+    for (j = 0; j < iocb->qiov->niov; j++) {
+        for (i = 0; i < iocb->qiov->iov[j].iov_len / 8; i++) {
+            uint64_t *buffer = iocb->qiov->iov[j].iov_base;
 
-                /* 6-byte LBA + 2-byte range per entry */
-                uint64_t entry = le64_to_cpu(buffer[i]);
-                uint64_t sector = entry & 0x0000ffffffffffffULL;
-                uint16_t count = entry >> 48;
+            /* 6-byte LBA + 2-byte range per entry */
+            uint64_t entry = le64_to_cpu(buffer[i]);
+            uint64_t sector = entry & 0x0000ffffffffffffULL;
+            uint16_t count = entry >> 48;
 
-                if (count == 0) {
-                    continue;
-                }
-
-                if (!ide_sect_range_ok(s, sector, count)) {
-                    block_acct_invalid(blk_get_stats(s->blk), BLOCK_ACCT_UNMAP);
-                    iocb->ret = -EINVAL;
-                    goto done;
-                }
-
-                block_acct_start(blk_get_stats(s->blk), &s->acct,
-                                 count << BDRV_SECTOR_BITS, BLOCK_ACCT_UNMAP);
-
-                /* Got an entry! Submit and exit.  */
-                iocb->aiocb = blk_aio_pdiscard(s->blk,
-                                               sector << BDRV_SECTOR_BITS,
-                                               count << BDRV_SECTOR_BITS,
-                                               ide_issue_trim_cb, opaque);
-                return;
+            if (count == 0) {
+                continue;
             }
 
-            iocb->j++;
-            iocb->i = -1;
+            if (iocb->canceled) {
+                iocb->ret = -ECANCELED;
+                goto done;
+            }
+
+            if (!ide_sect_range_ok(s, sector, count)) {
+                block_acct_invalid(blk_get_stats(s->blk), BLOCK_ACCT_UNMAP);
+                iocb->ret = -EINVAL;
+                goto done;
+            }
+
+            block_acct_start(blk_get_stats(s->blk), &s->acct,
+                             count << BDRV_SECTOR_BITS, BLOCK_ACCT_UNMAP);
+
+            /* Got an entry! Submit and exit.  */
+            ret = blk_co_pdiscard(s->blk,
+                                  sector << BDRV_SECTOR_BITS,
+                                  count << BDRV_SECTOR_BITS,
+                                  BDRV_REQ_NO_QUEUE);
+            if (ret >= 0) {
+                block_acct_done(blk_get_stats(s->blk), &s->acct);
+            } else {
+                iocb->ret = ret;
+                block_acct_failed(blk_get_stats(s->blk), &s->acct);
+                goto done;
+            }
         }
-    } else {
-        iocb->ret = ret;
     }
 
+    iocb->ret = 0;
 done:
-    iocb->aiocb = NULL;
     if (iocb->bh) {
         replay_bh_schedule_event(iocb->bh);
     }
@@ -527,9 +518,7 @@ BlockAIOCB *ide_issue_trim(
     IDEState *s = opaque;
     IDEDevice *dev = s->unit ? s->bus->slave : s->bus->master;
     TrimAIOCB *iocb;
-
-    /* Paired with a decrement in ide_trim_bh_cb() */
-    blk_inc_in_flight(s->blk);
+    Coroutine *co;
 
     iocb = blk_aio_get(&trim_aiocb_info, s->blk, cb, cb_opaque);
     iocb->s = s;
@@ -537,9 +526,11 @@ BlockAIOCB *ide_issue_trim(
                                    &DEVICE(dev)->mem_reentrancy_guard);
     iocb->ret = 0;
     iocb->qiov = qiov;
-    iocb->i = -1;
-    iocb->j = 0;
-    ide_issue_trim_cb(iocb, 0);
+    iocb->canceled = false;
+
+    co = qemu_coroutine_create(ide_trim_co_entry, iocb);
+    aio_co_enter(qemu_get_current_aio_context(), co);
+
     return &iocb->common;
 }
 
@@ -751,10 +742,17 @@ void ide_cancel_dma_sync(IDEState *s)
      * In the future we'll be able to safely cancel the I/O if the
      * whole DMA operation will be submitted to disk with a single
      * aio operation with preadv/pwritev.
+     *
+     * Note: s->bus->dma->aiocb might belong to the adjacent IDEState,
+     * so we have to drain both drives to get it cleared.
      */
     if (s->bus->dma->aiocb) {
         trace_ide_cancel_dma_sync_remaining();
-        blk_drain(s->blk);
+        for (int i = 0; i < 2; i++) {
+            if (s->bus->ifs[i].blk) {
+                blk_drain(s->bus->ifs[i].blk);
+            }
+        }
         assert(s->bus->dma->aiocb == NULL);
     }
 }
@@ -799,6 +797,7 @@ static void ide_sector_read(IDEState *s)
     s->error = 0; /* not needed by IDE spec, but needed by Windows */
     sector_num = ide_get_sector(s);
     n = s->nsector;
+    ide_set_retry(s);
 
     if (n == 0) {
         ide_transfer_stop(s);
@@ -827,7 +826,7 @@ static void ide_sector_read(IDEState *s)
                                       ide_sector_read_cb, s);
 }
 
-void dma_buf_commit(IDEState *s, uint32_t tx_bytes)
+void ide_dma_buf_commit(IDEState *s, uint32_t tx_bytes)
 {
     if (s->bus->dma->ops->commit_buf) {
         s->bus->dma->ops->commit_buf(s->bus->dma, tx_bytes);
@@ -848,7 +847,7 @@ void ide_set_inactive(IDEState *s, bool more)
 
 void ide_dma_error(IDEState *s)
 {
-    dma_buf_commit(s, 0);
+    ide_dma_buf_commit(s, 0);
     ide_abort_command(s);
     ide_set_inactive(s, false);
     ide_bus_set_irq(s->bus);
@@ -893,7 +892,7 @@ static void ide_dma_cb(void *opaque, int ret)
     if (ret < 0) {
         if (ide_handle_rw_error(s, -ret, ide_dma_cmd_to_retry(s->dma_cmd))) {
             s->bus->dma->aiocb = NULL;
-            dma_buf_commit(s, 0);
+            ide_dma_buf_commit(s, 0);
             return;
         }
     }
@@ -912,7 +911,7 @@ static void ide_dma_cb(void *opaque, int ret)
     sector_num = ide_get_sector(s);
     if (n > 0) {
         assert(n * 512 == s->sg.size);
-        dma_buf_commit(s, s->sg.size);
+        ide_dma_buf_commit(s, s->sg.size);
         sector_num += n;
         ide_set_sector(s, sector_num);
         s->nsector -= n;
@@ -930,8 +929,12 @@ static void ide_dma_cb(void *opaque, int ret)
     s->io_buffer_index = 0;
     s->io_buffer_size = n * 512;
     prep_size = s->bus->dma->ops->prepare_buf(s->bus->dma, s->io_buffer_size);
-    /* prepare_buf() must succeed and respect the limit */
-    assert(prep_size >= 0 && prep_size <= n * 512);
+    if (prep_size < 0) {
+        ide_dma_error(s);
+        return;
+    }
+    /* If prepare_buf() succeeds, it must respect the limit. */
+    assert(prep_size <= n * 512);
 
     /*
      * Now prep_size stores the number of bytes in the sglist, and
@@ -944,7 +947,7 @@ static void ide_dma_cb(void *opaque, int ret)
          * Reset the Active bit and don't raise the interrupt.
          */
         s->status = READY_STAT | SEEK_STAT;
-        dma_buf_commit(s, 0);
+        ide_dma_buf_commit(s, 0);
         goto eot;
     }
 
@@ -968,8 +971,7 @@ static void ide_dma_cb(void *opaque, int ret)
                                            BDRV_SECTOR_SIZE, ide_dma_cb, s);
         break;
     case IDE_DMA_TRIM:
-        s->bus->dma->aiocb = dma_blk_io(blk_get_aio_context(s->blk),
-                                        &s->sg, offset, BDRV_SECTOR_SIZE,
+        s->bus->dma->aiocb = dma_blk_io(&s->sg, offset, BDRV_SECTOR_SIZE,
                                         ide_issue_trim, s, ide_dma_cb, s,
                                         DMA_DIRECTION_TO_DEVICE);
         break;
@@ -1059,7 +1061,7 @@ static void ide_sector_write_cb(void *opaque, int ret)
                            ide_sector_write);
     }
 
-    if (win2k_install_hack && ((++s->irq_count % 16) == 0)) {
+    if (s->win2k_install_hack && ((++s->irq_count % 16) == 0)) {
         /* It seems there is a bug in the Windows 2000 installer HDD
            IDE driver which fills the disk with empty logs when the
            IDE write IRQ comes too early. This hack tries to correct
@@ -1623,11 +1625,24 @@ static bool cmd_read_native_max(IDEState *s, uint8_t cmd)
     /* Refuse if no sectors are addressable (e.g. medium not inserted) */
     if (s->nb_sectors == 0) {
         ide_abort_command(s);
-        return true;
-    }
+    } else {
+        /*
+         * Save the active drive parameters, which may have been
+         * limited from their native counterparts by, e.g., INITIALIZE
+         * DEVICE PARAMETERS or SET MAX ADDRESS.
+         */
+        const int aheads = s->heads;
+        const int asectors = s->sectors;
 
-    ide_cmd_lba48_transform(s, lba48);
-    ide_set_sector(s, s->nb_sectors - 1);
+        s->heads = s->drive_heads;
+        s->sectors = s->drive_sectors;
+
+        ide_cmd_lba48_transform(s, lba48);
+        ide_set_sector(s, s->nb_sectors - 1);
+
+        s->heads = aheads;
+        s->sectors = asectors;
+    }
 
     return true;
 }
@@ -1641,13 +1656,20 @@ static bool cmd_check_power_mode(IDEState *s, uint8_t cmd)
 /* INITIALIZE DEVICE PARAMETERS */
 static bool cmd_specify(IDEState *s, uint8_t cmd)
 {
-    if (s->blk && s->drive_kind != IDE_CD) {
-        s->heads = (s->select & (ATA_DEV_HS)) + 1;
-        s->sectors = s->nsector;
-        ide_bus_set_irq(s->bus);
-    } else {
+    if (!s->blk || s->drive_kind == IDE_CD) {
         ide_abort_command(s);
+        return true;
     }
+
+    /* ATA-2 D.2.8 limits IDENTIFY DEVICE word 56, and the count, to 1..255 */
+    if (s->nsector == 0 || s->nsector > 255) {
+        ide_abort_command(s);
+        return true;
+    }
+
+    s->heads = (s->select & (ATA_DEV_HS)) + 1;
+    s->sectors = s->nsector;
+    ide_bus_set_irq(s->bus);
 
     return true;
 }
@@ -2589,24 +2611,21 @@ static const BlockDevOps ide_hd_block_ops = {
     .resize_cb = ide_resize_cb,
 };
 
-int ide_init_drive(IDEState *s, BlockBackend *blk, IDEDriveKind kind,
-                   const char *version, const char *serial, const char *model,
-                   uint64_t wwn,
-                   uint32_t cylinders, uint32_t heads, uint32_t secs,
-                   int chs_trans, Error **errp)
+int ide_init_drive(IDEState *s, IDEDevice *dev, IDEDriveKind kind, Error **errp)
 {
     uint64_t nb_sectors;
 
-    s->blk = blk;
+    s->blk = dev->conf.blk;
     s->drive_kind = kind;
 
-    blk_get_geometry(blk, &nb_sectors);
-    s->cylinders = cylinders;
-    s->heads = s->drive_heads = heads;
-    s->sectors = s->drive_sectors = secs;
-    s->chs_trans = chs_trans;
+    blk_get_geometry(s->blk, &nb_sectors);
+    s->win2k_install_hack = dev->win2k_install_hack;
+    s->cylinders = dev->conf.cyls;
+    s->heads = s->drive_heads = dev->conf.heads;
+    s->sectors = s->drive_sectors = dev->conf.secs;
+    s->chs_trans = dev->chs_trans;
     s->nb_sectors = nb_sectors;
-    s->wwn = wwn;
+    s->wwn = dev->wwn;
     /* The SMART values should be preserved across power cycles
        but they aren't.  */
     s->smart_enabled = 1;
@@ -2614,26 +2633,26 @@ int ide_init_drive(IDEState *s, BlockBackend *blk, IDEDriveKind kind,
     s->smart_errors = 0;
     s->smart_selftest_count = 0;
     if (kind == IDE_CD) {
-        blk_set_dev_ops(blk, &ide_cd_block_ops, s);
+        blk_set_dev_ops(s->blk, &ide_cd_block_ops, s);
     } else {
         if (!blk_is_inserted(s->blk)) {
             error_setg(errp, "Device needs media, but drive is empty");
             return -1;
         }
-        if (!blk_is_writable(blk)) {
+        if (!blk_is_writable(s->blk)) {
             error_setg(errp, "Can't use a read-only drive");
             return -1;
         }
-        blk_set_dev_ops(blk, &ide_hd_block_ops, s);
+        blk_set_dev_ops(s->blk, &ide_hd_block_ops, s);
     }
-    if (serial) {
-        pstrcpy(s->drive_serial_str, sizeof(s->drive_serial_str), serial);
+    if (dev->serial) {
+        pstrcpy(s->drive_serial_str, sizeof(s->drive_serial_str), dev->serial);
     } else {
         snprintf(s->drive_serial_str, sizeof(s->drive_serial_str),
                  "QM%05d", s->drive_serial);
     }
-    if (model) {
-        pstrcpy(s->drive_model_str, sizeof(s->drive_model_str), model);
+    if (dev->model) {
+        pstrcpy(s->drive_model_str, sizeof(s->drive_model_str), dev->model);
     } else {
         switch (kind) {
         case IDE_CD:
@@ -2648,14 +2667,14 @@ int ide_init_drive(IDEState *s, BlockBackend *blk, IDEDriveKind kind,
         }
     }
 
-    if (version) {
-        pstrcpy(s->version, sizeof(s->version), version);
+    if (dev->version) {
+        pstrcpy(s->version, sizeof(s->version), dev->version);
     } else {
-        pstrcpy(s->version, sizeof(s->version), qemu_hw_version());
+        pstrcpy(s->version, sizeof(s->version), QEMU_HW_VERSION);
     }
 
     ide_reset(s);
-    blk_iostatus_enable(blk);
+    blk_iostatus_enable(s->blk);
     return 0;
 }
 
@@ -2918,7 +2937,7 @@ static const VMStateDescription vmstate_ide_atapi_gesn_state = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = ide_atapi_gesn_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(events.new_media, IDEState),
         VMSTATE_BOOL(events.eject_request, IDEState),
         VMSTATE_END_OF_LIST()
@@ -2930,7 +2949,7 @@ static const VMStateDescription vmstate_ide_tray_state = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = ide_tray_state_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(tray_open, IDEState),
         VMSTATE_BOOL(tray_locked, IDEState),
         VMSTATE_END_OF_LIST()
@@ -2944,7 +2963,7 @@ static const VMStateDescription vmstate_ide_drive_pio_state = {
     .pre_save = ide_drive_pio_pre_save,
     .post_load = ide_drive_pio_post_load,
     .needed = ide_drive_pio_state_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(req_nb_sectors, IDEState),
         VMSTATE_VARRAY_INT32(io_buffer, IDEState, io_buffer_total_len, 1,
                              vmstate_info_uint8, uint8_t),
@@ -2962,7 +2981,7 @@ const VMStateDescription vmstate_ide_drive = {
     .version_id = 3,
     .minimum_version_id = 0,
     .post_load = ide_drive_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(mult_sectors, IDEState),
         VMSTATE_INT32(identify_set, IDEState),
         VMSTATE_BUFFER_TEST(identify_data, IDEState, is_identify_set),
@@ -2985,7 +3004,7 @@ const VMStateDescription vmstate_ide_drive = {
         VMSTATE_UINT8_V(cdrom_changed, IDEState, 3),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_ide_drive_pio_state,
         &vmstate_ide_tray_state,
         &vmstate_ide_atapi_gesn_state,
@@ -2998,7 +3017,7 @@ static const VMStateDescription vmstate_ide_error_status = {
     .version_id = 2,
     .minimum_version_id = 1,
     .needed = ide_error_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(error_status, IDEBus),
         VMSTATE_INT64_V(retry_sector_num, IDEBus, 2),
         VMSTATE_UINT32_V(retry_nsector, IDEBus, 2),
@@ -3011,12 +3030,12 @@ const VMStateDescription vmstate_ide_bus = {
     .name = "ide_bus",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(cmd, IDEBus),
         VMSTATE_UINT8(unit, IDEBus),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_ide_error_status,
         NULL
     }

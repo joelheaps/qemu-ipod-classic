@@ -28,7 +28,7 @@
 #include "ahci.h"
 #include "pci-pc.h"
 
-#include "qemu/host-utils.h"
+#include "qemu/bswap.h"
 
 #include "hw/pci/pci_ids.h"
 #include "hw/pci/pci_regs.h"
@@ -662,7 +662,7 @@ unsigned ahci_pick_cmd(AHCIQState *ahci, uint8_t port)
     g_assert_not_reached();
 }
 
-inline unsigned size_to_prdtl(unsigned bytes, unsigned bytes_per_prd)
+static unsigned size_to_prdtl(unsigned bytes, unsigned bytes_per_prd)
 {
     /* Each PRD can describe up to 4MiB */
     g_assert_cmphex(bytes_per_prd, <=, 4096 * 1024);
@@ -707,6 +707,11 @@ void ahci_exec(AHCIQState *ahci, uint8_t port,
     if (opts->atapi) {
         uint16_t bcl = opts->set_bcl ? opts->bcl : ATAPI_SECTOR_SIZE;
         cmd = ahci_atapi_command_create(op, bcl, opts->atapi_dma);
+        if (opts->atapi_raw) {
+            /* request full 2352-byte raw sectors; sector_size must match */
+            cmd->atapi_cmd[9] = 0xf8;
+            cmd->sector_size = ATAPI_RAW_SECTOR_SIZE;
+        }
     } else {
         cmd = ahci_command_create(op);
     }
@@ -1046,7 +1051,7 @@ static void ahci_atapi_command_set_offset(AHCICommand *cmd, uint64_t lba)
     case CMD_ATAPI_REQUEST_SENSE:
     case CMD_ATAPI_TEST_UNIT_READY:
     case CMD_ATAPI_START_STOP_UNIT:
-        g_assert_cmpuint(lba, ==, 0x00);
+        g_assert_cmphex(lba, ==, 0x00);
         break;
     default:
         /* SCSI doesn't have uniform packet formats,
@@ -1109,7 +1114,7 @@ static void ahci_atapi_set_size(AHCICommand *cmd, uint64_t xbytes)
         break;
     case CMD_ATAPI_READ_CD:
         /* 24bit BE store */
-        g_assert_cmpuint(nsectors, <, 1ULL << 24);
+        g_assert_cmphex(nsectors, <, 1ULL << 24);
         tmp = nsectors;
         cbd[6] = (tmp & 0xFF0000) >> 16;
         cbd[7] = (tmp & 0xFF00) >> 8;

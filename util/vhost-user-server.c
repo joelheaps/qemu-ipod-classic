@@ -11,7 +11,7 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/vhost-user-server.h"
-#include "block/aio-wait.h"
+#include "qemu/aio-wait.h"
 
 /*
  * Theory of operation:
@@ -62,12 +62,28 @@ static void vmsg_close_fds(VhostUserMsg *vmsg)
     }
 }
 
-static void vmsg_unblock_fds(VhostUserMsg *vmsg)
+static bool vmsg_unblock_fds(VhostUserMsg *vmsg, Error **errp)
 {
     int i;
-    for (i = 0; i < vmsg->fd_num; i++) {
-        qemu_socket_set_nonblock(vmsg->fds[i]);
+
+    /*
+     * These messages carry fd used to map memory, not to send/receive messages,
+     * so this operation is useless. In addition, in some systems this
+     * operation can fail (e.g. in macOS setting an fd returned by shm_open()
+     * non-blocking fails with errno = ENOTTY)
+     */
+    if (vmsg->request == VHOST_USER_ADD_MEM_REG ||
+        vmsg->request == VHOST_USER_SET_MEM_TABLE) {
+        return true;
     }
+
+    for (i = 0; i < vmsg->fd_num; i++) {
+        if (!qemu_set_blocking(vmsg->fds[i], false, errp)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static void panic_cb(VuDev *vu_dev, const char *buf)
@@ -110,7 +126,6 @@ vu_message_read(VuDev *vu_dev, int conn_fd, VhostUserMsg *vmsg)
 
     vmsg->fd_num = 0;
     if (!ioc) {
-        error_report_err(local_err);
         goto fail;
     }
 
@@ -164,7 +179,10 @@ vu_message_read(VuDev *vu_dev, int conn_fd, VhostUserMsg *vmsg)
     } while (read_bytes != VHOST_USER_HDR_SIZE);
 
     /* qio_channel_readv_full will make socket fds blocking, unblock them */
-    vmsg_unblock_fds(vmsg);
+    if (!vmsg_unblock_fds(vmsg, &local_err)) {
+        error_report_err(local_err);
+        goto fail;
+    }
     if (vmsg->size > sizeof(vmsg->payload)) {
         error_report("Error: too big message request: %d, "
                      "size: vmsg->size: %u, "
@@ -291,7 +309,8 @@ set_watch(VuDev *vu_dev, int fd, int vu_evt,
 
         vu_fd_watch->fd = fd;
         vu_fd_watch->cb = cb;
-        qemu_socket_set_nonblock(fd);
+        /* TODO: handle error more gracefully than aborting */
+        qemu_set_blocking(fd, false, &error_abort);
         aio_set_fd_handler(server->ctx, fd, kick_handler,
                            NULL, NULL, NULL, vu_fd_watch);
         vu_fd_watch->vu_dev = vu_dev;
@@ -324,6 +343,7 @@ static void vu_accept(QIONetListener *listener, QIOChannelSocket *sioc,
                       gpointer opaque)
 {
     VuServer *server = opaque;
+    Error *local_err = NULL;
 
     if (server->sioc) {
         warn_report("Only one vhost-user client is allowed to "
@@ -356,14 +376,15 @@ static void vu_accept(QIONetListener *listener, QIOChannelSocket *sioc,
     object_ref(OBJECT(server->ioc));
 
     /* TODO vu_message_write() spins if non-blocking! */
-    qio_channel_set_blocking(server->ioc, false, NULL);
+    if (!qio_channel_set_blocking(server->ioc, false, &local_err)) {
+        error_report_err(local_err);
+        vu_deinit(&server->vu_dev);
+        return;
+    }
 
     qio_channel_set_follow_coroutine_ctx(server->ioc, true);
 
-    /* Attaching the AioContext starts the vu_client_trip coroutine */
-    aio_context_acquire(server->ctx);
     vhost_user_server_attach_aio_context(server, server->ctx);
-    aio_context_release(server->ctx);
 }
 
 /* server->ctx acquired by caller */

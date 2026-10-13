@@ -86,13 +86,13 @@ static const VMStateDescription vmstate_ipod_classic_cs42l55 = {
     },
 };
 
-static void ipod_classic_cs42l55_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_cs42l55_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     dc->desc = "Cirrus Logic CS42L55 audio codec";
-    dc->reset = ipod_classic_cs42l55_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_cs42l55_reset);
     dc->vmsd = &vmstate_ipod_classic_cs42l55;
     k->event = ipod_classic_cs42l55_event;
     k->recv = ipod_classic_cs42l55_recv;

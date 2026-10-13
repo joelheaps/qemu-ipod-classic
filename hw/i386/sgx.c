@@ -16,13 +16,13 @@
 #include "hw/mem/memory-device.h"
 #include "monitor/qdev.h"
 #include "monitor/monitor.h"
-#include "monitor/hmp-target.h"
+#include "monitor/hmp.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "qapi/qapi-commands-misc-target.h"
-#include "exec/address-spaces.h"
-#include "sysemu/hw_accel.h"
-#include "sysemu/reset.h"
+#include "qapi/qapi-commands-misc-i386.h"
+#include "system/address-spaces.h"
+#include "system/hw_accel.h"
+#include "system/reset.h"
 #include <sys/ioctl.h>
 #include "hw/acpi/aml-build.h"
 
@@ -84,10 +84,10 @@ static uint64_t sgx_calc_section_metric(uint64_t low, uint64_t high)
            ((high & MAKE_64BIT_MASK(0, 20)) << 32);
 }
 
-static SGXEPCSectionList *sgx_calc_host_epc_sections(void)
+static SgxEpcSectionList *sgx_calc_host_epc_sections(void)
 {
-    SGXEPCSectionList *head = NULL, **tail = &head;
-    SGXEPCSection *section;
+    SgxEpcSectionList *head = NULL, **tail = &head;
+    SgxEpcSection *section;
     uint32_t i, type;
     uint32_t eax, ebx, ecx, edx;
     uint32_t j = 0;
@@ -104,7 +104,7 @@ static SGXEPCSectionList *sgx_calc_host_epc_sections(void)
             break;
         }
 
-        section = g_new0(SGXEPCSection, 1);
+        section = g_new0(SgxEpcSection, 1);
         section->node = j++;
         section->size = sgx_calc_section_metric(ecx, edx);
         QAPI_LIST_APPEND(tail, section);
@@ -153,18 +153,20 @@ static void sgx_epc_reset(void *opaque)
      }
 }
 
-SGXInfo *qmp_query_sgx_capabilities(Error **errp)
+SgxInfo *qmp_query_sgx_capabilities(Error **errp)
 {
-    SGXInfo *info = NULL;
+    SgxInfo *info = NULL;
     uint32_t eax, ebx, ecx, edx;
+    Error *local_err = NULL;
 
-    int fd = qemu_open_old("/dev/sgx_vepc", O_RDWR);
+    int fd = qemu_open("/dev/sgx_vepc", O_RDWR, &local_err);
     if (fd < 0) {
-        error_setg(errp, "SGX is not enabled in KVM");
+        error_append_hint(&local_err, "SGX is not enabled in KVM");
+        error_propagate(errp, local_err);
         return NULL;
     }
 
-    info = g_new0(SGXInfo, 1);
+    info = g_new0(SgxInfo, 1);
     host_cpuid(0x7, 0, &eax, &ebx, &ecx, &edx);
 
     info->sgx = ebx & (1U << 2) ? true : false;
@@ -181,17 +183,17 @@ SGXInfo *qmp_query_sgx_capabilities(Error **errp)
     return info;
 }
 
-static SGXEPCSectionList *sgx_get_epc_sections_list(void)
+static SgxEpcSectionList *sgx_get_epc_sections_list(void)
 {
     GSList *device_list = sgx_epc_get_device_list();
-    SGXEPCSectionList *head = NULL, **tail = &head;
-    SGXEPCSection *section;
+    SgxEpcSectionList *head = NULL, **tail = &head;
+    SgxEpcSection *section;
 
     for (; device_list; device_list = device_list->next) {
         DeviceState *dev = device_list->data;
         Object *obj = OBJECT(dev);
 
-        section = g_new0(SGXEPCSection, 1);
+        section = g_new0(SgxEpcSection, 1);
         section->node = object_property_get_uint(obj, SGX_EPC_NUMA_NODE_PROP,
                                                  &error_abort);
         section->size = object_property_get_uint(obj, SGX_EPC_SIZE_PROP,
@@ -203,9 +205,9 @@ static SGXEPCSectionList *sgx_get_epc_sections_list(void)
     return head;
 }
 
-SGXInfo *qmp_query_sgx(Error **errp)
+SgxInfo *qmp_query_sgx(Error **errp)
 {
-    SGXInfo *info = NULL;
+    SgxInfo *info = NULL;
     X86MachineState *x86ms;
     PCMachineState *pcms =
         (PCMachineState *)object_dynamic_cast(qdev_get_machine(),
@@ -221,7 +223,7 @@ SGXInfo *qmp_query_sgx(Error **errp)
         return NULL;
     }
 
-    info = g_new0(SGXInfo, 1);
+    info = g_new0(SgxInfo, 1);
 
     info->sgx = true;
     info->sgx1 = true;
@@ -235,8 +237,8 @@ SGXInfo *qmp_query_sgx(Error **errp)
 void hmp_info_sgx(Monitor *mon, const QDict *qdict)
 {
     Error *err = NULL;
-    SGXEPCSectionList *section_list, *section;
-    g_autoptr(SGXInfo) info = qmp_query_sgx(&err);
+    SgxEpcSectionList *section_list, *section;
+    g_autoptr(SgxInfo) info = qmp_query_sgx(&err);
     uint64_t size = 0;
 
     if (err) {
@@ -264,12 +266,22 @@ void hmp_info_sgx(Monitor *mon, const QDict *qdict)
                    size);
 }
 
+bool check_sgx_support(void)
+{
+    if (!object_dynamic_cast(qdev_get_machine(), TYPE_PC_MACHINE)) {
+        return false;
+    }
+    return true;
+}
+
 bool sgx_epc_get_section(int section_nr, uint64_t *addr, uint64_t *size)
 {
-    PCMachineState *pcms = PC_MACHINE(qdev_get_machine());
+    PCMachineState *pcms =
+        (PCMachineState *)object_dynamic_cast(qdev_get_machine(),
+                                              TYPE_PC_MACHINE);
     SGXEPCDevice *epc;
 
-    if (pcms->sgx_epc.size == 0 || pcms->sgx_epc.nr_sections <= section_nr) {
+    if (!pcms || pcms->sgx_epc.size == 0 || pcms->sgx_epc.nr_sections <= section_nr) {
         return true;
     }
 
@@ -286,7 +298,6 @@ void pc_machine_init_sgx_epc(PCMachineState *pcms)
     SGXEPCState *sgx_epc = &pcms->sgx_epc;
     X86MachineState *x86ms = X86_MACHINE(pcms);
     SgxEPCList *list = NULL;
-    Object *obj;
 
     memset(sgx_epc, 0, sizeof(SGXEPCState));
     if (!x86ms->sgx_epc_list) {
@@ -300,16 +311,15 @@ void pc_machine_init_sgx_epc(PCMachineState *pcms)
                                 &sgx_epc->mr);
 
     for (list = x86ms->sgx_epc_list; list; list = list->next) {
-        obj = object_new("sgx-epc");
+        DeviceState *dev = qdev_new(TYPE_SGX_EPC);
 
         /* set the memdev link with memory backend */
-        object_property_parse(obj, SGX_EPC_MEMDEV_PROP, list->value->memdev,
-                              &error_fatal);
+        object_property_parse(OBJECT(dev), SGX_EPC_MEMDEV_PROP,
+                              list->value->memdev, &error_fatal);
         /* set the numa node property for sgx epc object */
-        object_property_set_uint(obj, SGX_EPC_NUMA_NODE_PROP, list->value->node,
-                             &error_fatal);
-        object_property_set_bool(obj, "realized", true, &error_fatal);
-        object_unref(obj);
+        object_property_set_uint(OBJECT(dev), SGX_EPC_NUMA_NODE_PROP,
+                                 list->value->node, &error_fatal);
+        qdev_realize_and_unref(dev, NULL, &error_fatal);
     }
 
     if ((sgx_epc->base + sgx_epc->size) < sgx_epc->base) {

@@ -25,16 +25,17 @@
 #include "qemu/osdep.h"
 
 #include "qapi/error.h"
-#include "qapi/qapi-commands-machine-target.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qerror.h"
+#include "qapi/qapi-commands-machine.h"
+#include "qobject/qbool.h"
+#include "qobject/qdict.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/visitor.h"
 #include "qom/qom-qobject.h"
-#include "sysemu/kvm.h"
-#include "sysemu/tcg.h"
+#include "system/kvm.h"
+#include "system/tcg.h"
 #include "cpu-qom.h"
 #include "cpu.h"
+#include "target/riscv/tcg/csr.h"
 
 static void riscv_cpu_add_definition(gpointer data, gpointer user_data)
 {
@@ -44,8 +45,7 @@ static void riscv_cpu_add_definition(gpointer data, gpointer user_data)
     const char *typename = object_class_get_name(oc);
     ObjectClass *dyn_class;
 
-    info->name = g_strndup(typename,
-                           strlen(typename) - strlen("-" TYPE_RISCV_CPU));
+    info->name = cpu_model_from_type(typename);
     info->q_typename = g_strdup(typename);
 
     dyn_class = object_class_dynamic_cast(oc, TYPE_RISCV_DYNAMIC_CPU);
@@ -91,27 +91,45 @@ static void riscv_obj_add_qdict_prop(Object *obj, QDict *qdict_out,
     }
 }
 
-static void riscv_obj_add_multiext_props(Object *obj, QDict *qdict_out,
-                                         const RISCVCPUMultiExtConfig *arr)
+static void riscv_obj_add_multiext_props(Object *obj, QDict *qdict_out)
 {
-    for (int i = 0; arr[i].name != NULL; i++) {
-        riscv_obj_add_qdict_prop(obj, qdict_out, arr[i].name);
+    const RISCVIsaExtData *edata;
+
+    for (edata = isa_edata_arr; edata && edata->name; edata++) {
+        if (edata->prop_name) {
+            riscv_obj_add_qdict_prop(obj, qdict_out, edata->prop_name);
+        }
+    }
+}
+
+static void riscv_obj_add_profiles_qdict(Object *obj, QDict *qdict_out)
+{
+    RISCVCPUProfile *profile;
+    QObject *value;
+
+    for (int i = 0; riscv_profiles[i] != NULL; i++) {
+        profile = riscv_profiles[i];
+        value = QOBJECT(qbool_from_bool(profile->present));
+
+        qdict_put_obj(qdict_out, profile->name, value);
     }
 }
 
 static void riscv_cpuobj_validate_qdict_in(Object *obj, QObject *props,
-                                           const QDict *qdict_in,
+                                           const char *props_arg_name,
                                            Error **errp)
 {
+    const QDict *qdict_in;
     const QDictEntry *qe;
     Visitor *visitor;
     Error *local_err = NULL;
 
     visitor = qobject_input_visitor_new(props);
-    if (!visit_start_struct(visitor, NULL, NULL, 0, &local_err)) {
+    if (!visit_start_struct(visitor, props_arg_name, NULL, 0, &local_err)) {
         goto err;
     }
 
+    qdict_in = qobject_to(QDict, props);
     for (qe = qdict_first(qdict_in); qe; qe = qdict_next(qdict_in, qe)) {
         object_property_find_err(obj, qe->key, &local_err);
         if (local_err) {
@@ -129,11 +147,6 @@ static void riscv_cpuobj_validate_qdict_in(Object *obj, QObject *props,
         goto err;
     }
 
-    riscv_cpu_finalize_features(RISCV_CPU(obj), &local_err);
-    if (local_err) {
-        goto err;
-    }
-
     visit_end_struct(visitor, NULL);
 
 err:
@@ -146,7 +159,6 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
                                                      Error **errp)
 {
     CpuModelExpansionInfo *expansion_info;
-    const QDict *qdict_in = NULL;
     QDict *qdict_out;
     ObjectClass *oc;
     Object *obj;
@@ -164,14 +176,6 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
         return NULL;
     }
 
-    if (model->props) {
-        qdict_in = qobject_to(QDict, model->props);
-        if (!qdict_in) {
-            error_setg(errp, QERR_INVALID_PARAMETER_TYPE, "props", "dict");
-            return NULL;
-        }
-    }
-
     obj = object_new(object_class_get_name(oc));
 
     riscv_check_if_cpu_available(RISCV_CPU(obj), &local_err);
@@ -181,8 +185,8 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
         return NULL;
     }
 
-    if (qdict_in) {
-        riscv_cpuobj_validate_qdict_in(obj, model->props, qdict_in,
+    if (model->props) {
+        riscv_cpuobj_validate_qdict_in(obj, model->props, "model.props",
                                        &local_err);
         if (local_err) {
             error_propagate(errp, local_err);
@@ -191,15 +195,21 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
         }
     }
 
+    riscv_cpu_finalize_features(RISCV_CPU(obj), &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        object_unref(obj);
+        return NULL;
+    }
+
     expansion_info = g_new0(CpuModelExpansionInfo, 1);
     expansion_info->model = g_malloc0(sizeof(*expansion_info->model));
     expansion_info->model->name = g_strdup(model->name);
 
     qdict_out = qdict_new();
 
-    riscv_obj_add_multiext_props(obj, qdict_out, riscv_cpu_extensions);
-    riscv_obj_add_multiext_props(obj, qdict_out, riscv_cpu_experimental_exts);
-    riscv_obj_add_multiext_props(obj, qdict_out, riscv_cpu_vendor_exts);
+    riscv_obj_add_multiext_props(obj, qdict_out);
+    riscv_obj_add_profiles_qdict(obj, qdict_out);
 
     /* Add our CPU boolean options too */
     riscv_obj_add_qdict_prop(obj, qdict_out, "mmu");

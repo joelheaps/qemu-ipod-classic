@@ -25,8 +25,8 @@
 #include "qemu/osdep.h"
 #include "net/eth.h"
 #include "qemu/module.h"
-#include "exec/memory.h"
-#include "hw/irq.h"
+#include "system/memory.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "ne2000.h"
 #include "trace.h"
@@ -606,7 +606,7 @@ const VMStateDescription vmstate_ne2000 = {
     .version_id = 2,
     .minimum_version_id = 0,
     .post_load = ne2000_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_V(rxcr, NE2000State, 2),
         VMSTATE_UINT8(cmd, NE2000State),
         VMSTATE_UINT32(start, NE2000State),

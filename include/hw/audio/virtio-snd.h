@@ -17,7 +17,7 @@
 #define QEMU_VIRTIO_SOUND_H
 
 #include "hw/virtio/virtio.h"
-#include "audio/audio.h"
+#include "qemu/audio.h"
 #include "standard-headers/linux/virtio_ids.h"
 #include "standard-headers/linux/virtio_snd.h"
 
@@ -122,7 +122,6 @@ struct VirtIOSoundPCMBuffer {
 };
 
 struct VirtIOSoundPCM {
-    VirtIOSound *snd;
     /*
      * PCM parameters are a separate field instead of a VirtIOSoundPCMStream
      * field, because the operation of PCM control requests is first
@@ -135,7 +134,6 @@ struct VirtIOSoundPCM {
 };
 
 struct VirtIOSoundPCMStream {
-    VirtIOSoundPCM *pcm;
     virtio_snd_pcm_info info;
     virtio_snd_pcm_set_params params;
     uint32_t id;
@@ -150,8 +148,8 @@ struct VirtIOSoundPCMStream {
     } voice;
     QemuMutex queue_mutex;
     bool active;
+    uint32_t latency_bytes;
     QSIMPLEQ_HEAD(, VirtIOSoundPCMBuffer) queue;
-    QSIMPLEQ_HEAD(, VirtIOSoundPCMBuffer) invalid;
 };
 
 /*
@@ -216,13 +214,28 @@ struct VirtIOSound {
 
     VirtQueue *queues[VIRTIO_SND_VQ_MAX];
     uint64_t features;
-    VirtIOSoundPCM *pcm;
-    QEMUSoundCard card;
+    VirtIOSoundPCM pcm;
+    AudioBackend *audio_be;
     VMChangeStateEntry *vmstate;
     virtio_snd_config snd_conf;
     QemuMutex cmdq_mutex;
     QTAILQ_HEAD(, virtio_snd_ctrl_command) cmdq;
     bool processing_cmdq;
+    /*
+     * Convenience queue to keep track of invalid tx/rx queue messages inside
+     * the tx/rx callbacks.
+     *
+     * In the callbacks as a first step we are emptying the virtqueue to handle
+     * each message and we cannot add an invalid message back to the queue: we
+     * would re-process it in subsequent loop iterations.
+     *
+     * Instead, we add them to this queue and after finishing examining every
+     * virtqueue element, we inform the guest for each invalid message.
+     *
+     * This queue must be empty at all times except for inside the tx/rx
+     * callbacks.
+     */
+    QSIMPLEQ_HEAD(, VirtIOSoundPCMBuffer) invalid;
 };
 
 struct virtio_snd_ctrl_command {
@@ -230,6 +243,7 @@ struct virtio_snd_ctrl_command {
     VirtQueue *vq;
     virtio_snd_hdr ctrl;
     virtio_snd_hdr resp;
+    size_t payload_size;
     QTAILQ_ENTRY(virtio_snd_ctrl_command) next;
 };
 #endif

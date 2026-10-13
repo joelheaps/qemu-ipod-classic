@@ -25,4 +25,4 @@ if [ ! -f build.ninja ] || [ "$#" -gt 0 ]; then
     --extra-ldflags="$(pkg-config --libs libcrypto)" --disable-werror --enable-pie "$@"
 fi
 make -j "${JOBS:-$(getconf _NPROCESSORS_ONLN)}" qemu-system-arm qemu-img
-make -C contrib/plugins libpctrace.so libprovtrace.so
+ninja contrib/plugins/libpctrace.so contrib/plugins/libprovtrace.so

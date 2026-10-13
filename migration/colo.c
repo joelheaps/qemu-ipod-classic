@@ -11,14 +11,13 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-migration.h"
 #include "migration.h"
 #include "qemu-file.h"
 #include "savevm.h"
 #include "migration/colo.h"
-#include "block.h"
 #include "io/channel-buffer.h"
 #include "trace.h"
 #include "qemu/error-report.h"
@@ -31,8 +30,8 @@
 #include "net/colo.h"
 #include "block/block.h"
 #include "qapi/qapi-events-migration.h"
-#include "sysemu/cpus.h"
-#include "sysemu/runstate.h"
+#include "system/cpus.h"
+#include "system/runstate.h"
 #include "net/filter.h"
 #include "options.h"
 
@@ -63,9 +62,9 @@ static bool colo_runstate_is_stopped(void)
     return runstate_check(RUN_STATE_COLO) || !runstate_is_running();
 }
 
-static void colo_checkpoint_notify(void *opaque)
+static void colo_checkpoint_notify(void)
 {
-    MigrationState *s = opaque;
+    MigrationState *s = migrate_get_current();
     int64_t next_notify_time;
 
     qemu_event_set(&s->colo_checkpoint_event);
@@ -74,10 +73,15 @@ static void colo_checkpoint_notify(void *opaque)
     timer_mod(s->colo_delay_timer, next_notify_time);
 }
 
+static void colo_checkpoint_notify_timer(void *opaque)
+{
+    colo_checkpoint_notify();
+}
+
 void colo_checkpoint_delay_set(void)
 {
     if (migration_in_colo_state()) {
-        colo_checkpoint_notify(migrate_get_current());
+        colo_checkpoint_notify();
     }
 }
 
@@ -142,7 +146,7 @@ static void secondary_vm_do_failover(void)
         return;
     }
     /* Notify COLO incoming thread that failover work is finished */
-    qemu_sem_post(&mis->colo_incoming_sem);
+    qemu_event_set(&mis->colo_incoming_event);
 
     /* For Secondary VM, jump to incoming co */
     if (mis->colo_incoming_co) {
@@ -162,18 +166,20 @@ static void primary_vm_do_failover(void)
      * kick COLO thread which might wait at
      * qemu_sem_wait(&s->colo_checkpoint_sem).
      */
-    colo_checkpoint_notify(s);
+    colo_checkpoint_notify();
 
     /*
      * Wake up COLO thread which may blocked in recv() or send(),
      * The s->rp_state.from_dst_file and s->to_dst_file may use the
      * same fd, but we still shutdown the fd for twice, it is harmless.
      */
-    if (s->to_dst_file) {
-        qemu_file_shutdown(s->to_dst_file);
-    }
-    if (s->rp_state.from_dst_file) {
-        qemu_file_shutdown(s->rp_state.from_dst_file);
+    WITH_QEMU_LOCK_GUARD(&s->qemu_file_lock) {
+        if (s->to_dst_file) {
+            qemu_file_shutdown(s->to_dst_file);
+        }
+        if (s->rp_state.from_dst_file) {
+            qemu_file_shutdown(s->rp_state.from_dst_file);
+        }
     }
 
     old_state = failover_set_state(FAILOVER_STATUS_ACTIVE,
@@ -191,7 +197,7 @@ static void primary_vm_do_failover(void)
     }
 
     /* Notify COLO thread that failover work is finished */
-    qemu_sem_post(&s->colo_exit_sem);
+    qemu_event_set(&s->colo_exit_event);
 }
 
 COLOMode get_colo_mode(void)
@@ -403,6 +409,7 @@ static int colo_do_checkpoint_transaction(MigrationState *s,
                                           QEMUFile *fb)
 {
     Error *local_err = NULL;
+    MigPendingData pending = {};
     int ret = -1;
 
     colo_send_message(s->to_dst_file, COLO_MESSAGE_CHECKPOINT_REQUEST,
@@ -420,13 +427,13 @@ static int colo_do_checkpoint_transaction(MigrationState *s,
     qio_channel_io_seek(QIO_CHANNEL(bioc), 0, 0, NULL);
     bioc->usage = 0;
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     if (failover_get_state() != FAILOVER_STATUS_NONE) {
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         goto out;
     }
     vm_stop_force_state(RUN_STATE_COLO);
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     trace_colo_vm_state_change("run", "stop");
     /*
      * Failover request bh could be called after vm_stop_force_state(),
@@ -435,50 +442,68 @@ static int colo_do_checkpoint_transaction(MigrationState *s,
     if (failover_get_state() != FAILOVER_STATUS_NONE) {
         goto out;
     }
-    qemu_mutex_lock_iothread();
+    bql_lock();
 
     replication_do_checkpoint_all(&local_err);
     if (local_err) {
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         goto out;
     }
 
     colo_send_message(s->to_dst_file, COLO_MESSAGE_VMSTATE_SEND, &local_err);
     if (local_err) {
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         goto out;
     }
-    /* Note: device state is saved into buffer */
-    ret = qemu_save_device_state(fb);
 
-    qemu_mutex_unlock_iothread();
+    /* Note: device state is saved into buffer */
+    ret = qemu_save_device_state(fb, &local_err);
     if (ret < 0) {
+        bql_unlock();
         goto out;
     }
 
     if (migrate_auto_converge()) {
         mig_throttle_counter_reset();
     }
+
+    /*
+     * Run the final pending query so migration modules can flush their dirty
+     * state (e.g., RAM syncs its dirty bitmap) before this checkpoint's live
+     * state is saved. Unlike a regular switchover, COLO reaches completion
+     * repeatedly for every checkpoint, so this must be done on each one.
+     */
+    if (!qemu_savevm_query_pending_final(s, &pending, &local_err)) {
+        ret = -1;
+        bql_unlock();
+        goto out;
+    }
+
     /*
      * Only save VM's live state, which not including device state.
      * TODO: We may need a timeout mechanism to prevent COLO process
      * to be blocked here.
      */
-    qemu_savevm_live_state(s->to_dst_file);
-
-    qemu_fflush(fb);
+    qemu_savevm_state_complete_precopy_iterable(s->to_dst_file, false);
+    qemu_savevm_state_end(s->to_dst_file);
+    bql_unlock();
 
     /*
      * We need the size of the VMstate data in Secondary side,
      * With which we can decide how much data should be read.
+     *
+     * Flush the qemufile cache to make sure both bioc->usage and
+     * bioc->data contains the latest info.
      */
+    qemu_fflush(fb);
     colo_send_message_value(s->to_dst_file, COLO_MESSAGE_VMSTATE_SIZE,
                             bioc->usage, &local_err);
     if (local_err) {
         goto out;
     }
 
-    qemu_put_buffer(s->to_dst_file, bioc->data, bioc->usage);
+    /* We can use async put because flush happens right away */
+    qemu_put_buffer_async(s->to_dst_file, bioc->data, bioc->usage, false);
     ret = qemu_fflush(s->to_dst_file);
     if (ret < 0) {
         goto out;
@@ -504,9 +529,9 @@ static int colo_do_checkpoint_transaction(MigrationState *s,
 
     ret = 0;
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     vm_start();
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     trace_colo_vm_state_change("stop", "run");
 
 out:
@@ -518,7 +543,7 @@ out:
 
 static void colo_compare_notify_checkpoint(Notifier *notifier, void *data)
 {
-    colo_checkpoint_notify(data);
+    colo_checkpoint_notify();
 }
 
 static void colo_process_checkpoint(MigrationState *s)
@@ -528,18 +553,14 @@ static void colo_process_checkpoint(MigrationState *s)
     Error *local_err = NULL;
     int ret;
 
+    assert(s->rp_state.from_dst_file);
+    assert(!s->rp_state.rp_thread_created);
     if (get_colo_mode() != COLO_MODE_PRIMARY) {
         error_report("COLO mode must be COLO_MODE_PRIMARY");
         return;
     }
 
     failover_init_state();
-
-    s->rp_state.from_dst_file = qemu_file_get_return_path(s->to_dst_file);
-    if (!s->rp_state.from_dst_file) {
-        error_report("Open QEMUFile from_dst_file failed");
-        goto out;
-    }
 
     packets_compare_notifier.notify = colo_compare_notify_checkpoint;
     colo_compare_register_notifier(&packets_compare_notifier);
@@ -557,15 +578,15 @@ static void colo_process_checkpoint(MigrationState *s)
     fb = qemu_file_new_output(QIO_CHANNEL(bioc));
     object_unref(OBJECT(bioc));
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     replication_start_all(REPLICATION_MODE_PRIMARY, &local_err);
     if (local_err) {
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         goto out;
     }
 
     vm_start();
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     trace_colo_vm_state_change("stop", "run");
 
     timer_mod(s->colo_delay_timer, qemu_clock_get_ms(QEMU_CLOCK_HOST) +
@@ -613,8 +634,8 @@ out:
     }
 
     /* Hope this not to be too long to wait here */
-    qemu_sem_wait(&s->colo_exit_sem);
-    qemu_sem_destroy(&s->colo_exit_sem);
+    qemu_event_wait(&s->colo_exit_event);
+    qemu_event_destroy(&s->colo_exit_event);
 
     /*
      * It is safe to unregister notifier after failover finished.
@@ -625,28 +646,18 @@ out:
     colo_compare_unregister_notifier(&packets_compare_notifier);
     timer_free(s->colo_delay_timer);
     qemu_event_destroy(&s->colo_checkpoint_event);
-
-    /*
-     * Must be called after failover BH is completed,
-     * Or the failover BH may shutdown the wrong fd that
-     * re-used by other threads after we release here.
-     */
-    if (s->rp_state.from_dst_file) {
-        qemu_fclose(s->rp_state.from_dst_file);
-        s->rp_state.from_dst_file = NULL;
-    }
 }
 
 void migrate_start_colo_process(MigrationState *s)
 {
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     qemu_event_init(&s->colo_checkpoint_event, false);
     s->colo_delay_timer =  timer_new_ms(QEMU_CLOCK_HOST,
-                                colo_checkpoint_notify, s);
+                                colo_checkpoint_notify_timer, NULL);
 
-    qemu_sem_init(&s->colo_exit_sem, 0);
+    qemu_event_init(&s->colo_exit_event, false);
     colo_process_checkpoint(s);
-    qemu_mutex_lock_iothread();
+    bql_lock();
 }
 
 static void colo_incoming_process_checkpoint(MigrationIncomingState *mis,
@@ -657,9 +668,9 @@ static void colo_incoming_process_checkpoint(MigrationIncomingState *mis,
     Error *local_err = NULL;
     int ret;
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     vm_stop_force_state(RUN_STATE_COLO);
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     trace_colo_vm_state_change("run", "stop");
 
     /* FIXME: This is unnecessary for periodic checkpoint mode */
@@ -677,13 +688,8 @@ static void colo_incoming_process_checkpoint(MigrationIncomingState *mis,
         return;
     }
 
-    qemu_mutex_lock_iothread();
-    cpu_synchronize_all_states();
-    ret = qemu_loadvm_state_main(mis->from_src_file, mis);
-    qemu_mutex_unlock_iothread();
-
+    ret = qemu_loadvm_state_main(mis->from_src_file, mis, errp);
     if (ret < 0) {
-        error_setg(errp, "Load VM's live state (ram) error");
         return;
     }
 
@@ -719,14 +725,21 @@ static void colo_incoming_process_checkpoint(MigrationIncomingState *mis,
         return;
     }
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     vmstate_loading = true;
+    /*
+     * With colo we load device vmstate during each checkpoint, on top of
+     * a vm that was already running. Some devices expect a reset before
+     * loading vmstate on such a previously running vm.
+     *
+     * NOTE: qemu_system_reset() calls cpu_synchronize_all_states() for us
+     */
+    qemu_system_reset(SHUTDOWN_CAUSE_SNAPSHOT_LOAD);
     colo_flush_ram_cache();
-    ret = qemu_load_device_state(fb);
+    ret = qemu_load_device_state(fb, errp);
     if (ret < 0) {
-        error_setg(errp, "COLO: load device state failed");
         vmstate_loading = false;
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         return;
     }
 
@@ -734,7 +747,7 @@ static void colo_incoming_process_checkpoint(MigrationIncomingState *mis,
     if (local_err) {
         error_propagate(errp, local_err);
         vmstate_loading = false;
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         return;
     }
 
@@ -743,7 +756,7 @@ static void colo_incoming_process_checkpoint(MigrationIncomingState *mis,
     if (local_err) {
         error_propagate(errp, local_err);
         vmstate_loading = false;
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         return;
     }
     /* Notify all filters of all NIC to do checkpoint */
@@ -752,13 +765,13 @@ static void colo_incoming_process_checkpoint(MigrationIncomingState *mis,
     if (local_err) {
         error_propagate(errp, local_err);
         vmstate_loading = false;
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         return;
     }
 
     vmstate_loading = false;
     vm_start();
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     trace_colo_vm_state_change("stop", "run");
 
     if (failover_get_state() == FAILOVER_STATUS_RELAUNCH) {
@@ -801,11 +814,11 @@ void colo_shutdown(void)
     case COLO_MODE_PRIMARY:
         s = migrate_get_current();
         qemu_event_set(&s->colo_checkpoint_event);
-        qemu_sem_post(&s->colo_exit_sem);
+        qemu_event_set(&s->colo_exit_event);
         break;
     case COLO_MODE_SECONDARY:
         mis = migration_incoming_get_current();
-        qemu_sem_post(&mis->colo_incoming_sem);
+        qemu_event_set(&mis->colo_incoming_event);
         break;
     default:
         break;
@@ -820,30 +833,44 @@ static void *colo_process_incoming_thread(void *opaque)
     Error *local_err = NULL;
 
     rcu_register_thread();
-    qemu_sem_init(&mis->colo_incoming_sem, 0);
+    qemu_event_init(&mis->colo_incoming_event, false);
 
     migrate_set_state(&mis->state, MIGRATION_STATUS_ACTIVE,
                       MIGRATION_STATUS_COLO);
 
+    assert(mis->to_src_file);
     if (get_colo_mode() != COLO_MODE_SECONDARY) {
         error_report("COLO mode must be COLO_MODE_SECONDARY");
         return NULL;
     }
 
+    /* Make sure all file formats throw away their mutable metadata */
+    bql_lock();
+    migration_block_activate(&local_err);
+    bql_unlock();
+    if (local_err) {
+        error_report_err(local_err);
+        return NULL;
+    }
+
     failover_init_state();
 
-    mis->to_src_file = qemu_file_get_return_path(mis->from_src_file);
-    if (!mis->to_src_file) {
-        error_report("COLO incoming thread: Open QEMUFile to_src_file failed");
-        goto out;
-    }
     /*
      * Note: the communication between Primary side and Secondary side
      * should be sequential, we set the fd to unblocked in migration incoming
      * coroutine, and here we are in the COLO incoming thread, so it is ok to
      * set the fd back to blocked.
      */
-    qemu_file_set_blocking(mis->from_src_file, true);
+    if (!qemu_file_set_blocking(mis->from_src_file, true, &local_err)) {
+        error_report_err(local_err);
+        goto out;
+    }
+
+    /*
+     * rp thread still running on primary side, shut it down to go into
+     * colo state.
+     */
+    migrate_send_rp_shut(mis, 0);
 
     colo_incoming_start_dirty_log();
 
@@ -851,14 +878,14 @@ static void *colo_process_incoming_thread(void *opaque)
     fb = qemu_file_new_input(QIO_CHANNEL(bioc));
     object_unref(OBJECT(bioc));
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     replication_start_all(REPLICATION_MODE_SECONDARY, &local_err);
     if (local_err) {
-        qemu_mutex_unlock_iothread();
+        bql_unlock();
         goto out;
     }
     vm_start();
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     trace_colo_vm_state_change("stop", "run");
 
     colo_send_message(mis->to_src_file, COLO_MESSAGE_CHECKPOINT_READY,
@@ -907,46 +934,31 @@ out:
     }
 
     /* Hope this not to be too long to loop here */
-    qemu_sem_wait(&mis->colo_incoming_sem);
-    qemu_sem_destroy(&mis->colo_incoming_sem);
+    qemu_event_wait(&mis->colo_incoming_event);
+    qemu_event_destroy(&mis->colo_incoming_event);
 
     rcu_unregister_thread();
     return NULL;
 }
 
-int coroutine_fn colo_incoming_co(void)
+void coroutine_fn colo_incoming_co(void)
 {
     MigrationIncomingState *mis = migration_incoming_get_current();
-    Error *local_err = NULL;
     QemuThread th;
 
-    assert(qemu_mutex_iothread_locked());
+    assert(bql_locked());
+    assert(migrate_colo());
 
-    if (!migration_incoming_colo_enabled()) {
-        return 0;
-    }
-
-    /* Make sure all file formats throw away their mutable metadata */
-    bdrv_activate_all(&local_err);
-    if (local_err) {
-        error_report_err(local_err);
-        return -EINVAL;
-    }
-
-    qemu_thread_create(&th, "COLO incoming", colo_process_incoming_thread,
+    qemu_thread_create(&th, MIGRATION_THREAD_DST_COLO,
+                       colo_process_incoming_thread,
                        mis, QEMU_THREAD_JOINABLE);
 
     mis->colo_incoming_co = qemu_coroutine_self();
     qemu_coroutine_yield();
     mis->colo_incoming_co = NULL;
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     /* Wait checkpoint incoming thread exit before free resource */
     qemu_thread_join(&th);
-    qemu_mutex_lock_iothread();
-
-    /* We hold the global iothread lock, so it is safe here */
-    colo_release_ram_cache();
-
-    return 0;
+    bql_lock();
 }

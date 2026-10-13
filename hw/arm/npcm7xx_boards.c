@@ -17,19 +17,20 @@
 #include "qemu/osdep.h"
 
 #include "hw/arm/npcm7xx.h"
+#include "hw/arm/machines-qom.h"
 #include "hw/core/cpu.h"
 #include "hw/i2c/i2c_mux_pca954x.h"
 #include "hw/i2c/smbus_eeprom.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/nvram/eeprom_at24c.h"
-#include "hw/qdev-core.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
-#include "sysemu/blockdev.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/block-backend.h"
+#include "system/blockdev.h"
+#include "system/system.h"
+#include "system/block-backend.h"
 #include "qemu/error-report.h"
 
 
@@ -121,14 +122,7 @@ static NPCM7xxState *npcm7xx_create_soc(MachineState *machine,
                                         uint32_t hw_straps)
 {
     NPCM7xxMachineClass *nmc = NPCM7XX_MACHINE_GET_CLASS(machine);
-    MachineClass *mc = MACHINE_CLASS(nmc);
     Object *obj;
-
-    if (strcmp(machine->cpu_type, mc->default_cpu_type) != 0) {
-        error_report("This board can only be used with %s",
-                     mc->default_cpu_type);
-        exit(1);
-    }
 
     obj = object_new_with_props(nmc->soc_type, OBJECT(machine), "soc",
                                 &error_abort, NULL);
@@ -460,22 +454,26 @@ static void npcm7xx_set_soc_type(NPCM7xxMachineClass *nmc, const char *type)
     mc->default_cpus = mc->min_cpus = mc->max_cpus = sc->num_cpus;
 }
 
-static void npcm7xx_machine_class_init(ObjectClass *oc, void *data)
+static void npcm7xx_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    static const char * const valid_cpu_types[] = {
+        ARM_CPU_TYPE_NAME("cortex-a9"),
+        NULL
+    };
 
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
     mc->no_parallel = 1;
     mc->default_ram_id = "ram";
-    mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a9");
+    mc->valid_cpu_types = valid_cpu_types;
 }
 
 /*
  * Schematics:
  * https://github.com/Nuvoton-Israel/nuvoton-info/blob/master/npcm7xx-poleg/evaluation-board/board_deliverables/NPCM750x_EB_ver.A1.1_COMPLETE.pdf
  */
-static void npcm750_evb_machine_class_init(ObjectClass *oc, void *data)
+static void npcm750_evb_machine_class_init(ObjectClass *oc, const void *data)
 {
     NPCM7xxMachineClass *nmc = NPCM7XX_MACHINE_CLASS(oc);
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -484,10 +482,11 @@ static void npcm750_evb_machine_class_init(ObjectClass *oc, void *data)
 
     mc->desc = "Nuvoton NPCM750 Evaluation Board (Cortex-A9)";
     mc->init = npcm750_evb_init;
+    mc->auto_create_sdcard = true;
     mc->default_ram_size = 512 * MiB;
 };
 
-static void gsj_machine_class_init(ObjectClass *oc, void *data)
+static void gsj_machine_class_init(ObjectClass *oc, const void *data)
 {
     NPCM7xxMachineClass *nmc = NPCM7XX_MACHINE_CLASS(oc);
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -496,10 +495,11 @@ static void gsj_machine_class_init(ObjectClass *oc, void *data)
 
     mc->desc = "Quanta GSJ (Cortex-A9)";
     mc->init = quanta_gsj_init;
+    mc->auto_create_sdcard = true;
     mc->default_ram_size = 512 * MiB;
 };
 
-static void gbs_bmc_machine_class_init(ObjectClass *oc, void *data)
+static void gbs_bmc_machine_class_init(ObjectClass *oc, const void *data)
 {
     NPCM7xxMachineClass *nmc = NPCM7XX_MACHINE_CLASS(oc);
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -508,10 +508,11 @@ static void gbs_bmc_machine_class_init(ObjectClass *oc, void *data)
 
     mc->desc = "Quanta GBS (Cortex-A9)";
     mc->init = quanta_gbs_init;
+    mc->auto_create_sdcard = true;
     mc->default_ram_size = 1 * GiB;
 }
 
-static void kudo_bmc_machine_class_init(ObjectClass *oc, void *data)
+static void kudo_bmc_machine_class_init(ObjectClass *oc, const void *data)
 {
     NPCM7xxMachineClass *nmc = NPCM7XX_MACHINE_CLASS(oc);
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -520,10 +521,11 @@ static void kudo_bmc_machine_class_init(ObjectClass *oc, void *data)
 
     mc->desc = "Kudo BMC (Cortex-A9)";
     mc->init = kudo_bmc_init;
+    mc->auto_create_sdcard = true;
     mc->default_ram_size = 1 * GiB;
 };
 
-static void mori_bmc_machine_class_init(ObjectClass *oc, void *data)
+static void mori_bmc_machine_class_init(ObjectClass *oc, const void *data)
 {
     NPCM7xxMachineClass *nmc = NPCM7XX_MACHINE_CLASS(oc);
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -532,6 +534,7 @@ static void mori_bmc_machine_class_init(ObjectClass *oc, void *data)
 
     mc->desc = "Mori BMC (Cortex-A9)";
     mc->init = mori_bmc_init;
+    mc->auto_create_sdcard = true;
     mc->default_ram_size = 1 * GiB;
 }
 
@@ -547,22 +550,27 @@ static const TypeInfo npcm7xx_machine_types[] = {
         .name           = MACHINE_TYPE_NAME("npcm750-evb"),
         .parent         = TYPE_NPCM7XX_MACHINE,
         .class_init     = npcm750_evb_machine_class_init,
+        .interfaces     = arm_machine_interfaces,
     }, {
         .name           = MACHINE_TYPE_NAME("quanta-gsj"),
         .parent         = TYPE_NPCM7XX_MACHINE,
         .class_init     = gsj_machine_class_init,
+        .interfaces     = arm_machine_interfaces,
     }, {
         .name           = MACHINE_TYPE_NAME("quanta-gbs-bmc"),
         .parent         = TYPE_NPCM7XX_MACHINE,
         .class_init     = gbs_bmc_machine_class_init,
+        .interfaces     = arm_machine_interfaces,
     }, {
         .name           = MACHINE_TYPE_NAME("kudo-bmc"),
         .parent         = TYPE_NPCM7XX_MACHINE,
         .class_init     = kudo_bmc_machine_class_init,
+        .interfaces     = arm_machine_interfaces,
     }, {
         .name           = MACHINE_TYPE_NAME("mori-bmc"),
         .parent         = TYPE_NPCM7XX_MACHINE,
         .class_init     = mori_bmc_machine_class_init,
+        .interfaces     = arm_machine_interfaces,
     },
 };
 

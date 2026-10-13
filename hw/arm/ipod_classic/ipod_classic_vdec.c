@@ -17,7 +17,7 @@
 #include "qemu/module.h"
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
-#include "exec/cpu-common.h"    /* cpu_physical_memory_write */
+#include "system/physmem.h"    /* physical_memory_write */
 #include "hw/arm/ipod_classic/ipod_classic_vdec.h"
 
 static uint32_t vdec_trace_pc(void)
@@ -123,9 +123,9 @@ static bool vdec_decode_submit(IPodClassicVdecState *s)
         s->dec_errors++;
         goto out;
     }
-    cpu_physical_memory_write(yaddr, planes, ysz);
-    cpu_physical_memory_write(uaddr, planes + ysz, csz);
-    cpu_physical_memory_write(vaddr, planes + ysz + csz, csz);
+    physical_memory_write(yaddr, planes, ysz);
+    physical_memory_write(uaddr, planes + ysz, csz);
+    physical_memory_write(vaddr, planes + ysz + csz, csz);
     s->decodes++;
     if (s->decodes <= 4 || s->trace) {
         fprintf(stderr, "VDEC: decoded frame #%" PRIu64 " %dx%d au=%d "
@@ -290,12 +290,12 @@ static const VMStateDescription vmstate_ipod_classic_vdec = {
     },
 };
 
-static void ipod_classic_vdec_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_vdec_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 video decoder";
-    dc->reset = ipod_classic_vdec_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_vdec_reset);
     dc->vmsd = &vmstate_ipod_classic_vdec;
     dc->user_creatable = false;
 }

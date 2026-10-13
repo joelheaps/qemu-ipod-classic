@@ -24,7 +24,7 @@ def task_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binaries.mkdir()
     executable(binaries / "uname", "echo Linux\n")
     executable(binaries / "id", "echo 0\n")
-    for tool in ("apt-get", "dnf", "make", "timeout", "docker"):
+    for tool in ("apt-get", "dnf", "make", "ninja", "timeout", "docker"):
         executable(binaries / tool, f'echo "{tool} $*" >> "$COMMAND_LOG"\n')
     monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
     monkeypatch.setenv("COMMAND_LOG", str(tmp_path / "commands"))
@@ -82,7 +82,7 @@ def test_native_build_never_installs_packages(
     task_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Incremental native builds use the selected directory and shared QEMU targets."""
-    for tool in ("cc", "ninja", "pkg-config"):
+    for tool in ("cc", "pkg-config"):
         executable(task_env / tool, "exit 0\n")
     executable(task_env / "uv", 'echo "uv $*" >> "$COMMAND_LOG"\n')
     build = tmp_path / "native build"
@@ -96,7 +96,10 @@ def test_native_build_never_installs_packages(
     assert "uv venv --allow-existing --managed-python --python 3.14.8 bootstrap" in commands
     assert "uv pip install --python bootstrap/bin/python distlib==0.4.0" in commands
     assert "make -j 2 qemu-system-arm qemu-img" in commands
-    assert "libpctrace.so libprovtrace.so" in commands
+    assert (
+        "ninja contrib/plugins/libpctrace.so contrib/plugins/libprovtrace.so"
+        in commands
+    )
     assert "apt-get" not in commands
     assert "dnf" not in commands
 

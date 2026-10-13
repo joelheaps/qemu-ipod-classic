@@ -19,22 +19,30 @@
 /* Ask for warnings for anything that was marked deprecated in
  * the defined version, or before. It is a candidate for rewrite.
  */
-#define GLIB_VERSION_MIN_REQUIRED GLIB_VERSION_2_56
+#define GLIB_VERSION_MIN_REQUIRED GLIB_VERSION_2_66
 
 /* Ask for warnings if code tries to use function that did not
  * exist in the defined version. These risk breaking builds
  */
-#define GLIB_VERSION_MAX_ALLOWED GLIB_VERSION_2_56
+#define GLIB_VERSION_MAX_ALLOWED GLIB_VERSION_2_66
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 #include <glib.h>
+#include <glib/gstdio.h>
 #if defined(G_OS_UNIX)
 #include <glib-unix.h>
 #include <sys/types.h>
 #include <pwd.h>
 #endif
+
+/*
+ * These functions perform function pointer casts which can cause function call
+ * failure on Emscripten. Use g_slist_sort_with_data and g_list_sort_with_data
+ * instead of these functions.
+ */
+#pragma GCC poison g_slist_sort g_list_sort
 
 /*
  * Note that because of the GLIB_VERSION_MAX_ALLOWED constant above, allowing
@@ -105,29 +113,6 @@ static inline gpointer g_memdup2_qemu(gconstpointer mem, gsize byte_size)
 }
 #define g_memdup2(m, s) g_memdup2_qemu(m, s)
 
-#if defined(G_OS_UNIX)
-/*
- * Note: The fallback implementation is not MT-safe, and it returns a copy of
- * the libc passwd (must be g_free() after use) but not the content. Because of
- * these important differences the caller must be aware of, it's not #define for
- * GLib API substitution.
- */
-static inline struct passwd *
-g_unix_get_passwd_entry_qemu(const gchar *user_name, GError **error)
-{
-#if GLIB_CHECK_VERSION(2, 64, 0)
-    return g_unix_get_passwd_entry(user_name, error);
-#else
-    struct passwd *p = getpwnam(user_name);
-    if (!p) {
-        g_set_error_literal(error, G_UNIX_ERROR, 0, g_strerror(errno));
-        return NULL;
-    }
-    return (struct passwd *)g_memdup(p, sizeof(*p));
-#endif
-}
-#endif /* G_OS_UNIX */
-
 static inline bool
 qemu_g_test_slow(void)
 {
@@ -144,6 +129,34 @@ qemu_g_test_slow(void)
 #define g_test_slow() qemu_g_test_slow()
 #define g_test_thorough() qemu_g_test_slow()
 #define g_test_quick() (!qemu_g_test_slow())
+
+static inline gboolean g_clear_fd_qemu(int *fd_ptr, GError **error)
+{
+#if GLIB_CHECK_VERSION(2, 76, 0)
+    return g_clear_fd(fd_ptr, error);
+#else
+    int fd = *fd_ptr;
+
+    *fd_ptr = -1;
+
+    if (fd < 0) {
+        return TRUE;
+    }
+
+    return g_close(fd, error);
+#endif
+}
+#define g_clear_fd(fd, err) g_clear_fd_qemu(fd, err)
+
+#if !GLIB_CHECK_VERSION(2, 76, 0)
+static inline void _g_clear_fd_ignore_error(int *fd_ptr)
+{
+    int errsv = errno;
+    g_clear_fd(fd_ptr, NULL);
+    errno = errsv;
+}
+#define g_autofd __attribute__((cleanup(_g_clear_fd_ignore_error)))
+#endif
 
 #pragma GCC diagnostic pop
 

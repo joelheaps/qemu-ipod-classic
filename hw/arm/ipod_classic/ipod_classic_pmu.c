@@ -32,8 +32,8 @@
  * WHAT IS NOT
  *
  *   - The RTC. It reads back whatever was written, which is wrong, and is
- *     flagged here because on the 5G an absent RTC had a visible side effect:
- *     Rockbox decided an alarm had gone off on every boot.
+ *     flagged here because an absent RTC has a visible side effect:
+ *     Rockbox decides an alarm has gone off on every boot.
  *   - Charging, the ON/OFF controller and the regulators. Writing them changes
  *     nothing, because there is no voltage in here for a voltage to mean.
  *   - The chip's interrupt output. Nothing is wired to it yet.
@@ -57,8 +57,8 @@
 #include "hw/i2c/i2c.h"
 #include "hw/core/cpu.h"
 #include "migration/vmstate.h"
-#include "sysemu/rtc.h"
-#include "sysemu/sysemu.h"
+#include "system/rtc.h"
+#include "system/system.h"
 #include "hw/arm/ipod_classic/ipod_classic_pmu.h"
 #include "hw/arm/ipod_classic/ipod_classic_env.h"
 
@@ -578,13 +578,13 @@ static void ipod_classic_pmu_init(Object *obj)
         "latches the INT6 GPIO2 edge bit. PMUHOLD is the boot-time default.");
 }
 
-static void ipod_classic_pmu_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_pmu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     dc->desc = "NXP PCF50635 power management unit";
-    dc->reset = ipod_classic_pmu_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_pmu_reset);
     dc->vmsd = &vmstate_ipod_classic_pmu;
     k->event = ipod_classic_pmu_event;
     k->recv = ipod_classic_pmu_recv;

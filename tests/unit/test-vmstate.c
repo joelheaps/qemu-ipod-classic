@@ -24,13 +24,13 @@
 
 #include "qemu/osdep.h"
 
-#include "../migration/migration.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file-types.h"
 #include "../migration/qemu-file.h"
 #include "../migration/savevm.h"
 #include "qemu/module.h"
 #include "io/channel-file.h"
+#include "qapi/error.h"
 
 static int temp_fd;
 
@@ -67,9 +67,13 @@ static QEMUFile *open_test_file(bool write)
 static void save_vmstate(const VMStateDescription *desc, void *obj)
 {
     QEMUFile *f = open_test_file(true);
+    Error *local_err = NULL;
 
     /* Save file with vmstate */
-    int ret = vmstate_save_state(f, desc, obj, NULL);
+    int ret = vmstate_save_state(f, desc, obj, NULL, &local_err);
+    if (ret) {
+        error_report_err(local_err);
+    }
     g_assert(!ret);
     qemu_put_byte(f, QEMU_VM_EOF);
     g_assert(!qemu_file_get_error(f));
@@ -109,14 +113,16 @@ static int load_vmstate_one(const VMStateDescription *desc, void *obj,
 {
     QEMUFile *f;
     int ret;
+    Error *local_err = NULL;
 
     f = open_test_file(true);
     qemu_put_buffer(f, wire, size);
     qemu_fclose(f);
 
     f = open_test_file(false);
-    ret = vmstate_load_state(f, desc, obj, version);
+    ret = vmstate_load_state(f, desc, obj, version, &local_err);
     if (ret) {
+        error_report_err(local_err);
         g_assert(qemu_file_get_error(f));
     } else{
         g_assert(!qemu_file_get_error(f));
@@ -197,7 +203,7 @@ static const VMStateDescription vmstate_simple_primitive = {
     .name = "simple/primitive",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(b_1, TestSimple),
         VMSTATE_BOOL(b_2, TestSimple),
         VMSTATE_UINT8(u8_1, TestSimple),
@@ -299,7 +305,7 @@ static const VMStateDescription vmstate_simple_arr = {
     .name = "simple/array",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT16_ARRAY(u16_1, TestSimpleArray, 3),
         VMSTATE_END_OF_LIST()
     }
@@ -341,7 +347,7 @@ static const VMStateDescription vmstate_versioned = {
     .name = "test/versioned",
     .version_id = 2,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(a, TestStruct),
         VMSTATE_UINT32_V(b, TestStruct, 2), /* Versioned field in the middle, so
                                              * we catch bugs more easily.
@@ -356,6 +362,8 @@ static const VMStateDescription vmstate_versioned = {
 
 static void test_load_v1(void)
 {
+    Error *local_err = NULL;
+    int ret;
     uint8_t buf[] = {
         0, 0, 0, 10,             /* a */
         0, 0, 0, 30,             /* c */
@@ -366,7 +374,10 @@ static void test_load_v1(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj = { .b = 200, .e = 500, .f = 600 };
-    vmstate_load_state(loading, &vmstate_versioned, &obj, 1);
+    ret = vmstate_load_state(loading, &vmstate_versioned, &obj, 1, &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     g_assert(!qemu_file_get_error(loading));
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 200);
@@ -379,6 +390,8 @@ static void test_load_v1(void)
 
 static void test_load_v2(void)
 {
+    Error *local_err = NULL;
+    int ret;
     uint8_t buf[] = {
         0, 0, 0, 10,             /* a */
         0, 0, 0, 20,             /* b */
@@ -392,7 +405,10 @@ static void test_load_v2(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj;
-    vmstate_load_state(loading, &vmstate_versioned, &obj, 2);
+    ret = vmstate_load_state(loading, &vmstate_versioned, &obj, 2, &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 20);
     g_assert_cmpint(obj.c, ==, 30);
@@ -412,7 +428,7 @@ static const VMStateDescription vmstate_skipping = {
     .name = "test/skip",
     .version_id = 2,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(a, TestStruct),
         VMSTATE_UINT32(b, TestStruct),
         VMSTATE_UINT32_TEST(c, TestStruct, test_skip),
@@ -426,10 +442,15 @@ static const VMStateDescription vmstate_skipping = {
 
 static void test_save_noskip(void)
 {
+    Error *local_err = NULL;
     QEMUFile *fsave = open_test_file(true);
     TestStruct obj = { .a = 1, .b = 2, .c = 3, .d = 4, .e = 5, .f = 6,
                        .skip_c_e = false };
-    int ret = vmstate_save_state(fsave, &vmstate_skipping, &obj, NULL);
+    int ret = vmstate_save_state(fsave, &vmstate_skipping, &obj, NULL,
+                                 &local_err);
+    if (ret) {
+        error_report_err(local_err);
+    }
     g_assert(!ret);
     g_assert(!qemu_file_get_error(fsave));
 
@@ -448,10 +469,15 @@ static void test_save_noskip(void)
 
 static void test_save_skip(void)
 {
+    Error *local_err = NULL;
     QEMUFile *fsave = open_test_file(true);
     TestStruct obj = { .a = 1, .b = 2, .c = 3, .d = 4, .e = 5, .f = 6,
                        .skip_c_e = true };
-    int ret = vmstate_save_state(fsave, &vmstate_skipping, &obj, NULL);
+    int ret = vmstate_save_state(fsave, &vmstate_skipping, &obj, NULL,
+                                 &local_err);
+    if (ret) {
+        error_report_err(local_err);
+    }
     g_assert(!ret);
     g_assert(!qemu_file_get_error(fsave));
 
@@ -468,6 +494,8 @@ static void test_save_skip(void)
 
 static void test_load_noskip(void)
 {
+    Error *local_err = NULL;
+    int ret;
     uint8_t buf[] = {
         0, 0, 0, 10,             /* a */
         0, 0, 0, 20,             /* b */
@@ -481,7 +509,10 @@ static void test_load_noskip(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj = { .skip_c_e = false };
-    vmstate_load_state(loading, &vmstate_skipping, &obj, 2);
+    ret = vmstate_load_state(loading, &vmstate_skipping, &obj, 2, &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     g_assert(!qemu_file_get_error(loading));
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 20);
@@ -494,6 +525,8 @@ static void test_load_noskip(void)
 
 static void test_load_skip(void)
 {
+    Error *local_err = NULL;
+    int ret;
     uint8_t buf[] = {
         0, 0, 0, 10,             /* a */
         0, 0, 0, 20,             /* b */
@@ -505,7 +538,10 @@ static void test_load_skip(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj = { .skip_c_e = true, .c = 300, .e = 500 };
-    vmstate_load_state(loading, &vmstate_skipping, &obj, 2);
+    ret = vmstate_load_state(loading, &vmstate_skipping, &obj, 2, &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     g_assert(!qemu_file_get_error(loading));
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 20);
@@ -524,7 +560,7 @@ const VMStateDescription vmsd_tst = {
     .name = "test/tst",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(i, TestStructTriv),
         VMSTATE_END_OF_LIST()
     }
@@ -542,7 +578,7 @@ const VMStateDescription vmsd_arps = {
     .name = "test/arps",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_ARRAY_OF_POINTER_TO_STRUCT(ar, TestArrayOfPtrToStuct,
                 AR_SIZE, 0, vmsd_tst, TestStructTriv),
         VMSTATE_END_OF_LIST()
@@ -584,7 +620,7 @@ static void test_arr_ptr_str_no0_load(void)
 
 static uint8_t wire_arr_ptr_0[] = {
     0x00, 0x00, 0x00, 0x00,
-    VMS_NULLPTR_MARKER,
+    VMS_MARKER_PTR_NULL,
     0x00, 0x00, 0x00, 0x02,
     0x00, 0x00, 0x00, 0x03,
     QEMU_VM_EOF
@@ -630,9 +666,9 @@ const VMStateDescription vmsd_arpp = {
     .name = "test/arps",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_ARRAY_OF_POINTER(ar, TestArrayOfPtrToInt,
-                AR_SIZE, 0, vmstate_info_int32, int32_t*),
+                AR_SIZE, 0, vmstate_info_int32, int32_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -666,6 +702,88 @@ static void test_arr_ptr_prim_0_load(void)
     }
 }
 
+static uint8_t wire_arr_ptr_with_nulls[] = {
+    VMS_MARKER_PTR_VALID,
+    0x00, 0x00, 0x00, 0x00,
+    VMS_MARKER_PTR_NULL,
+    VMS_MARKER_PTR_VALID,
+    0x00, 0x00, 0x00, 0x02,
+    VMS_MARKER_PTR_VALID,
+    0x00, 0x00, 0x00, 0x03,
+    QEMU_VM_EOF
+};
+
+typedef struct {
+    uint32_t       ar_items_num;
+    TestStructTriv **ar;
+} TestVArrayOfPtrToStuctWithNULLs;
+
+const VMStateDescription vmsd_arps_with_nulls = {
+    .name = "test/arps_with_nulls",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_VARRAY_OF_POINTER_TO_STRUCT_UINT32_ALLOC(
+            ar, TestVArrayOfPtrToStuctWithNULLs, ar_items_num,
+            0, vmsd_tst, TestStructTriv),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void test_arr_ptr_nulls_str_save(void)
+{
+    TestStructTriv ar[AR_SIZE] = { {.i = 0}, {.i = 1}, {.i = 2}, {.i = 3} };
+    TestVArrayOfPtrToStuctWithNULLs sample = {};
+    int idx;
+
+    sample.ar_items_num = AR_SIZE;
+    sample.ar = g_new0(TestStructTriv*, sample.ar_items_num);
+    sample.ar[0] = g_new0(TestStructTriv, 1);
+    *sample.ar[0] = ar[0];
+    /* note, sample.ar[1] remains NULL */
+    sample.ar[2] = g_new0(TestStructTriv, 1);
+    *sample.ar[2] = ar[2];
+    sample.ar[3] = g_new0(TestStructTriv, 1);
+    *sample.ar[3] = ar[3];
+
+    save_vmstate(&vmsd_arps_with_nulls, &sample);
+    compare_vmstate(wire_arr_ptr_with_nulls, sizeof(wire_arr_ptr_with_nulls));
+
+    for (idx = 0; idx < AR_SIZE; ++idx) {
+        g_free(sample.ar[idx]);
+    }
+    g_free(sample.ar);
+}
+
+static void test_arr_ptr_nulls_str_load(void)
+{
+    TestStructTriv ar_gt[AR_SIZE] = {{.i = 0}, {.i = 0}, {.i = 2}, {.i = 3} };
+    TestVArrayOfPtrToStuctWithNULLs obj = {};
+    int idx;
+
+    obj.ar_items_num = AR_SIZE;
+    obj.ar = g_new0(TestStructTriv*, obj.ar_items_num);
+
+    save_buffer(wire_arr_ptr_with_nulls, sizeof(wire_arr_ptr_with_nulls));
+    SUCCESS(load_vmstate_one(
+                &vmsd_arps_with_nulls, &obj, 1,
+                wire_arr_ptr_with_nulls, sizeof(wire_arr_ptr_with_nulls)));
+
+    for (idx = 0; idx < AR_SIZE; ++idx) {
+        if (idx == 1) {
+            g_assert_cmpint((uintptr_t)(obj.ar[idx]), ==, 0);
+        } else {
+            /* compare the target array ar with the ground truth array ar_gt */
+            g_assert_cmpint(ar_gt[idx].i, ==, obj.ar[idx]->i);
+        }
+    }
+
+    for (idx = 0; idx < AR_SIZE; ++idx) {
+        g_free(obj.ar[idx]);
+    }
+    g_free(obj.ar);
+}
+
 /* test QTAILQ migration */
 typedef struct TestQtailqElement TestQtailqElement;
 
@@ -685,7 +803,7 @@ static const VMStateDescription vmstate_q_element = {
     .name = "test/queue-element",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(b, TestQtailqElement),
         VMSTATE_UINT8(u8, TestQtailqElement),
         VMSTATE_END_OF_LIST()
@@ -696,7 +814,7 @@ static const VMStateDescription vmstate_q = {
     .name = "test/queue",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT16(i16, TestQtailq),
         VMSTATE_QTAILQ_V(q, TestQtailq, 1, vmstate_q_element, TestQtailqElement,
                          next),
@@ -745,6 +863,8 @@ static void test_save_q(void)
 
 static void test_load_q(void)
 {
+    int ret;
+    Error *local_err = NULL;
     TestQtailq obj_q = {
         .i16 = -512,
         .i32 = 70000,
@@ -774,7 +894,10 @@ static void test_load_q(void)
     TestQtailq tgt;
 
     QTAILQ_INIT(&tgt.q);
-    vmstate_load_state(fload, &vmstate_q, &tgt, 1);
+    ret = vmstate_load_state(fload, &vmstate_q, &tgt, 1, &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     char eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(tgt.i16, ==, obj_q.i16);
@@ -821,7 +944,7 @@ typedef struct TestGTreeInterval {
     .name = "interval",                                \
     .version_id = 1,                                   \
     .minimum_version_id = 1,                           \
-    .fields = (VMStateField[]) {                       \
+    .fields = (const VMStateField[]) {                 \
         VMSTATE_UINT64(low, TestGTreeInterval),        \
         VMSTATE_UINT64(high, TestGTreeInterval),       \
         VMSTATE_END_OF_LIST()                          \
@@ -839,7 +962,7 @@ typedef struct TestGTreeMapping {
     .name = "mapping",                                \
     .version_id = 1,                                  \
     .minimum_version_id = 1,                          \
-    .fields = (VMStateField[]) {                      \
+    .fields = (const VMStateField[]) {                \
         VMSTATE_UINT64(phys_addr, TestGTreeMapping),  \
         VMSTATE_UINT32(flags, TestGTreeMapping),      \
         VMSTATE_END_OF_LIST()                         \
@@ -915,7 +1038,7 @@ static const VMStateDescription vmstate_domain = {
     .version_id = 1,
     .minimum_version_id = 1,
     .pre_load = domain_preload,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(id, TestGTreeDomain),
         VMSTATE_GTREE_V(mappings, TestGTreeDomain, 1,
                         vmstate_interval_mapping,
@@ -940,7 +1063,7 @@ static const VMStateDescription vmstate_qlist_element = {
     .name = "test/queue list",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(id, TestQListElement),
         VMSTATE_END_OF_LIST()
     }
@@ -951,7 +1074,7 @@ static const VMStateDescription vmstate_iommu = {
     .version_id = 1,
     .minimum_version_id = 1,
     .pre_load = iommu_preload,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(id, TestGTreeIOMMU),
         VMSTATE_GTREE_DIRECT_KEY_V(domains, TestGTreeIOMMU, 1,
                                    &vmstate_domain, TestGTreeDomain),
@@ -963,7 +1086,7 @@ static const VMStateDescription vmstate_container = {
     .name = "test/container/qlist",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(id, TestQListContainer),
         VMSTATE_QLIST_V(list, TestQListContainer, 1, vmstate_qlist_element,
                         TestQListElement, next),
@@ -1116,6 +1239,8 @@ static void diff_iommu(TestGTreeIOMMU *iommu1, TestGTreeIOMMU *iommu2)
 
 static void test_gtree_load_domain(void)
 {
+    Error *local_err = NULL;
+    int ret;
     TestGTreeDomain *dest_domain = g_new0(TestGTreeDomain, 1);
     TestGTreeDomain *orig_domain = create_first_domain();
     QEMUFile *fload, *fsave;
@@ -1128,7 +1253,11 @@ static void test_gtree_load_domain(void)
 
     fload = open_test_file(false);
 
-    vmstate_load_state(fload, &vmstate_domain, dest_domain, 1);
+    ret = vmstate_load_state(fload, &vmstate_domain, dest_domain, 1,
+                             &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(orig_domain->id, ==, dest_domain->id);
@@ -1231,6 +1360,8 @@ static void test_gtree_save_iommu(void)
 
 static void test_gtree_load_iommu(void)
 {
+    Error *local_err = NULL;
+    int ret;
     TestGTreeIOMMU *dest_iommu = g_new0(TestGTreeIOMMU, 1);
     TestGTreeIOMMU *orig_iommu = create_iommu();
     QEMUFile *fsave, *fload;
@@ -1242,7 +1373,10 @@ static void test_gtree_load_iommu(void)
     qemu_fclose(fsave);
 
     fload = open_test_file(false);
-    vmstate_load_state(fload, &vmstate_iommu, dest_iommu, 1);
+    ret = vmstate_load_state(fload, &vmstate_iommu, dest_iommu, 1, &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(orig_iommu->id, ==, dest_iommu->id);
@@ -1364,6 +1498,8 @@ static void test_save_qlist(void)
 
 static void test_load_qlist(void)
 {
+    Error *local_err = NULL;
+    int ret;
     QEMUFile *fsave, *fload;
     TestQListContainer *orig_container = alloc_container();
     TestQListContainer *dest_container = g_new0(TestQListContainer, 1);
@@ -1377,7 +1513,11 @@ static void test_load_qlist(void)
     qemu_fclose(fsave);
 
     fload = open_test_file(false);
-    vmstate_load_state(fload, &vmstate_container, dest_container, 1);
+    ret = vmstate_load_state(fload, &vmstate_container, dest_container, 1,
+                             &local_err);
+    if (ret < 0) {
+        error_report_err(local_err);
+    }
     eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(eof, ==, QEMU_VM_EOF);
@@ -1414,7 +1554,7 @@ static int tmp_child_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_tmp_back_to_parent = {
     .name = "test/tmp_child_parent",
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(f, TestStruct),
         VMSTATE_END_OF_LIST()
     }
@@ -1424,7 +1564,7 @@ static const VMStateDescription vmstate_tmp_child = {
     .name = "test/tmp_child",
     .pre_save = tmp_child_pre_save,
     .post_load = tmp_child_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT64(diff, TmpTestStruct),
         VMSTATE_STRUCT_POINTER(parent, TmpTestStruct,
                                vmstate_tmp_back_to_parent, TestStruct),
@@ -1435,7 +1575,7 @@ static const VMStateDescription vmstate_tmp_child = {
 static const VMStateDescription vmstate_with_tmp = {
     .name = "test/with_tmp",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(a, TestStruct),
         VMSTATE_UINT64(d, TestStruct),
         VMSTATE_WITH_TMP(TestStruct, TmpTestStruct, vmstate_tmp_child),
@@ -1510,6 +1650,10 @@ int main(int argc, char **argv)
                     test_arr_ptr_prim_0_save);
     g_test_add_func("/vmstate/array/ptr/prim/0/load",
                     test_arr_ptr_prim_0_load);
+    g_test_add_func("/vmstate/array/ptr-nulls/str/save",
+                    test_arr_ptr_nulls_str_save);
+    g_test_add_func("/vmstate/array/ptr-nulls/str/load",
+                    test_arr_ptr_nulls_str_load);
     g_test_add_func("/vmstate/qtailq/save/saveq", test_save_q);
     g_test_add_func("/vmstate/qtailq/load/loadq", test_load_q);
     g_test_add_func("/vmstate/gtree/save/savedomain", test_gtree_save_domain);

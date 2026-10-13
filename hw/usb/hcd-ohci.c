@@ -26,15 +26,16 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qapi/error.h"
+#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "migration/vmstate.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-dma.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-dma.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "hcd-ohci.h"
 
@@ -577,7 +578,7 @@ static int ohci_service_iso_td(OHCIState *ohci, struct ohci_ed *ed)
     USBDevice *dev;
     USBEndpoint *ep;
     USBPacket *pkt;
-    uint8_t buf[8192];
+    QEMU_UNINITIALIZED uint8_t buf[8192];
     bool int_req;
     struct ohci_iso_td iso_td;
     uint32_t addr;
@@ -746,16 +747,16 @@ static int ohci_service_iso_td(OHCIState *ohci, struct ohci_ed *ed)
     usb_packet_setup(pkt, pid, ep, 0, addr, false, int_req);
     usb_packet_addbuf(pkt, buf, len);
     usb_handle_packet(dev, pkt);
-    if (pkt->status == USB_RET_ASYNC) {
-        usb_device_flush_ep_queue(dev, ep);
-        g_free(pkt);
-        return 1;
-    }
+
+    /* The USB core guarantees to never defer ISO TDs. */
+    assert(pkt->status != USB_RET_ASYNC);
+
     if (pkt->status == USB_RET_SUCCESS) {
         ret = pkt->actual_length;
     } else {
         ret = pkt->status;
     }
+    usb_packet_cleanup(pkt);
     g_free(pkt);
 
     trace_usb_ohci_iso_td_so(start_offset, end_offset, start_addr, end_addr,
@@ -927,6 +928,11 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
     case OHCI_TD_DIR_SETUP:
         str = "setup";
         pid = USB_TOKEN_SETUP;
+        if (OHCI_BM(ed->flags, ED_EN) > 0) {  /* setup only allowed to ep 0 */
+            trace_usb_ohci_td_bad_pid(str, ed->flags, td.flags);
+            ohci_die(ohci);
+            return 1;
+        }
         break;
     default:
         trace_usb_ohci_td_bad_direction(dir);
@@ -936,8 +942,8 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
         if ((td.cbp & 0xfffff000) != (td.be & 0xfffff000)) {
             len = (td.be & 0xfff) + 0x1001 - (td.cbp & 0xfff);
         } else {
-            if (td.cbp > td.be) {
-                trace_usb_ohci_iso_td_bad_cc_overrun(td.cbp, td.be);
+            if (td.cbp - 1 > td.be) {  /* rely on td.cbp != 0 */
+                trace_usb_ohci_td_bad_buf(td.cbp, td.be);
                 ohci_die(ohci);
                 return 1;
             }
@@ -951,6 +957,17 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
         if (len && dir != OHCI_TD_DIR_IN) {
             /* The endpoint may not allow us to transfer it all now */
             pktlen = (ed->flags & OHCI_ED_MPS_MASK) >> OHCI_ED_MPS_SHIFT;
+            /*
+             * The OHCI spec does not say what to do if the guest hands us
+             * an endpoint descriptor which specifies a MaximumPacketSize
+             * of zero, which would mean we can never actually make forward
+             * progress transferring data to it. We choose to treat it as
+             * an error.
+             */
+            if (pktlen == 0) {
+                ohci_die(ohci);
+                return 1;
+            }
             if (pktlen > len) {
                 pktlen = len;
             }
@@ -1113,6 +1130,8 @@ static int ohci_service_ed_list(OHCIState *ohci, uint32_t head)
         return 0;
     }
     for (cur = head; cur && link_cnt++ < ED_LINK_LIMIT; cur = next_ed) {
+        unsigned int ed_cnt = 0;
+
         if (ohci_read_ed(ohci, cur, &ed)) {
             trace_usb_ohci_ed_read_error(cur);
             ohci_die(ohci);
@@ -1155,6 +1174,13 @@ static int ohci_service_ed_list(OHCIState *ohci, uint32_t head)
                 if (ohci_service_iso_td(ohci, &ed)) {
                     break;
                 }
+            }
+
+            if (ed_cnt++ > ED_LINK_LIMIT) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "ohci: Too many endpoint descriptors in loop\n");
+                ohci_die(ohci);
+                return 0;
             }
         }
 
@@ -1241,6 +1267,10 @@ static void ohci_frame_boundary(void *opaque)
     hcca.frame = cpu_to_le16(ohci->frame_number);
     /* When the HC updates frame number, set pad to 0. Ref OHCI Spec 4.4.1*/
     hcca.pad = 0;
+    /* FrameNumberOverflow happens when bit 15 of frame number changes */
+    if (ohci->frame_number == 0x8000 || ohci->frame_number == 0) {
+        ohci_set_interrupt(ohci, OHCI_INTR_FNO);
+    }
 
     if (ohci->done_count == 0 && !(ohci->intr_status & OHCI_INTR_WD)) {
         if (!ohci->done) {
@@ -1955,36 +1985,11 @@ void ohci_sysbus_die(struct OHCIState *ohci)
     ohci_bus_stop(ohci);
 }
 
-static void ohci_realize_pxa(DeviceState *dev, Error **errp)
-{
-    OHCISysBusState *s = SYSBUS_OHCI(dev);
-    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-    Error *err = NULL;
-
-    usb_ohci_init(&s->ohci, dev, s->num_ports, s->dma_offset,
-                  s->masterbus, s->firstport,
-                  &address_space_memory, ohci_sysbus_die, &err);
-    if (err) {
-        error_propagate(errp, err);
-        return;
-    }
-    sysbus_init_irq(sbd, &s->ohci.irq);
-    sysbus_init_mmio(sbd, &s->ohci.mem);
-}
-
-static void usb_ohci_reset_sysbus(DeviceState *dev)
-{
-    OHCISysBusState *s = SYSBUS_OHCI(dev);
-    OHCIState *ohci = &s->ohci;
-
-    ohci_hard_reset(ohci);
-}
-
 static const VMStateDescription vmstate_ohci_state_port = {
     .name = "ohci-core/port",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ctrl, OHCIPort),
         VMSTATE_END_OF_LIST()
     },
@@ -2002,7 +2007,7 @@ static const VMStateDescription vmstate_ohci_eof_timer = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = ohci_eof_timer_needed,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_TIMER_PTR(eof_timer, OHCIState),
         VMSTATE_END_OF_LIST()
     },
@@ -2012,7 +2017,7 @@ const VMStateDescription vmstate_ohci_state = {
     .name = "ohci-core",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT64(sof_time, OHCIState),
         VMSTATE_UINT32(ctl, OHCIState),
         VMSTATE_UINT32(status, OHCIState),
@@ -2049,41 +2054,8 @@ const VMStateDescription vmstate_ohci_state = {
         VMSTATE_BOOL(async_complete, OHCIState),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription*[]) {
+    .subsections = (const VMStateDescription * const []) {
         &vmstate_ohci_eof_timer,
         NULL
     }
 };
-
-static Property ohci_sysbus_properties[] = {
-    DEFINE_PROP_STRING("masterbus", OHCISysBusState, masterbus),
-    DEFINE_PROP_UINT32("num-ports", OHCISysBusState, num_ports, 3),
-    DEFINE_PROP_UINT32("firstport", OHCISysBusState, firstport, 0),
-    DEFINE_PROP_DMAADDR("dma-offset", OHCISysBusState, dma_offset, 0),
-    DEFINE_PROP_END_OF_LIST(),
-};
-
-static void ohci_sysbus_class_init(ObjectClass *klass, void *data)
-{
-    DeviceClass *dc = DEVICE_CLASS(klass);
-
-    dc->realize = ohci_realize_pxa;
-    set_bit(DEVICE_CATEGORY_USB, dc->categories);
-    dc->desc = "OHCI USB Controller";
-    device_class_set_props(dc, ohci_sysbus_properties);
-    dc->reset = usb_ohci_reset_sysbus;
-}
-
-static const TypeInfo ohci_sysbus_info = {
-    .name          = TYPE_SYSBUS_OHCI,
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(OHCISysBusState),
-    .class_init    = ohci_sysbus_class_init,
-};
-
-static void ohci_register_types(void)
-{
-    type_register_static(&ohci_sysbus_info);
-}
-
-type_init(ohci_register_types)

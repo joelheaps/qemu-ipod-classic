@@ -22,7 +22,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -147,7 +147,7 @@ static void allwinner_a10_ccm_write(void *opaque, hwaddr offset,
 static const MemoryRegionOps allwinner_a10_ccm_ops = {
     .read = allwinner_a10_ccm_read,
     .write = allwinner_a10_ccm_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -193,13 +193,13 @@ static const VMStateDescription allwinner_a10_ccm_vmstate = {
     .name = "allwinner-a10-ccm",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, AwA10ClockCtlState, AW_A10_CCM_REGS_NUM),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static void allwinner_a10_ccm_class_init(ObjectClass *klass, void *data)
+static void allwinner_a10_ccm_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

@@ -7,33 +7,34 @@
  * See the COPYING file in the top-level directory.
  */
 
+#include "qemu/osdep.h"
 #include "hv-balloon-internal.h"
 
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "exec/cpu-common.h"
-#include "exec/ramblock.h"
-#include "hw/boards.h"
+#include "system/ramblock.h"
+#include "hw/core/boards.h"
 #include "hw/hyperv/dynmem-proto.h"
 #include "hw/hyperv/hv-balloon.h"
 #include "hw/hyperv/vmbus.h"
 #include "hw/mem/memory-device.h"
 #include "hw/mem/pc-dimm.h"
-#include "hw/qdev-core.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
 #include "monitor/qdev.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qapi-events-machine.h"
 #include "qapi/qapi-types-machine.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "qemu/timer.h"
-#include "sysemu/balloon.h"
-#include "sysemu/hostmem.h"
-#include "sysemu/reset.h"
+#include "system/balloon.h"
+#include "system/hostmem.h"
+#include "system/reset.h"
 #include "hv-balloon-our_range_memslots.h"
 #include "hv-balloon-page_range_tree.h"
 #include "trace.h"
@@ -65,10 +66,6 @@
  * If the number requested is too high Windows will no longer honor
  * these requests
  */
-
-struct HvBalloonClass {
-    VMBusDeviceClass parent_class;
-} HvBalloonClass;
 
 typedef enum State {
     /* not a real state */
@@ -161,8 +158,9 @@ typedef struct HvBalloon {
     MemoryRegion *mr;
 } HvBalloon;
 
-OBJECT_DEFINE_TYPE_WITH_INTERFACES(HvBalloon, hv_balloon, HV_BALLOON, VMBUS_DEVICE, \
-                                   { TYPE_MEMORY_DEVICE }, { })
+OBJECT_DEFINE_SIMPLE_TYPE_WITH_INTERFACES(HvBalloon, hv_balloon, \
+                                          HV_BALLOON, VMBUS_DEVICE, \
+                                          { TYPE_MEMORY_DEVICE }, { })
 
 #define HV_BALLOON_SET_STATE(hvb, news)             \
     do {                                            \
@@ -365,7 +363,7 @@ static void hv_balloon_unballoon_posting(HvBalloon *balloon, StateDesc *stdesc)
     PageRangeTree dtree;
     uint64_t *dctr;
     bool our_range;
-    struct dm_unballoon_request *ur;
+    g_autofree struct dm_unballoon_request *ur = NULL;
     size_t ur_size = sizeof(*ur) + sizeof(ur->range_array[0]);
     PageRange range;
     bool bret;
@@ -387,8 +385,7 @@ static void hv_balloon_unballoon_posting(HvBalloon *balloon, StateDesc *stdesc)
     assert(dtree.t);
     assert(dctr);
 
-    ur = alloca(ur_size);
-    memset(ur, 0, ur_size);
+    ur = g_malloc0(ur_size);
     ur->hdr.type = DM_UNBALLOON_REQUEST;
     ur->hdr.size = ur_size;
     ur->hdr.trans_id = balloon->trans_id;
@@ -513,8 +510,8 @@ ret_idle:
 static void hv_balloon_hot_add_rb_wait(HvBalloon *balloon, StateDesc *stdesc)
 {
     VMBusChannel *chan = hv_balloon_get_channel(balloon);
-    struct dm_hot_add *ha;
-    size_t ha_size = sizeof(*ha) + sizeof(ha->range);
+    struct dm_hot_add_with_region *ha;
+    size_t ha_size = sizeof(*ha);
 
     assert(balloon->state == S_HOT_ADD_RB_WAIT);
 
@@ -530,8 +527,8 @@ static void hv_balloon_hot_add_posting(HvBalloon *balloon, StateDesc *stdesc)
     PageRange *hot_add_range = &balloon->hot_add_range;
     uint64_t *current_count = &balloon->ha_current_count;
     VMBusChannel *chan = hv_balloon_get_channel(balloon);
-    struct dm_hot_add *ha;
-    size_t ha_size = sizeof(*ha) + sizeof(ha->range);
+    g_autofree struct dm_hot_add_with_region *ha = NULL;
+    size_t ha_size = sizeof(*ha);
     union dm_mem_page_range *ha_region;
     uint64_t align, chunk_max_size;
     ssize_t ret;
@@ -559,9 +556,8 @@ static void hv_balloon_hot_add_posting(HvBalloon *balloon, StateDesc *stdesc)
      */
     *current_count = MIN(hot_add_range->count, chunk_max_size);
 
-    ha = alloca(ha_size);
-    ha_region = &(&ha->range)[1];
-    memset(ha, 0, ha_size);
+    ha = g_malloc0(ha_size);
+    ha_region = &ha->region;
     ha->hdr.type = DM_MEM_HOT_ADD_REQUEST;
     ha->hdr.size = ha_size;
     ha->hdr.trans_id = balloon->trans_id;
@@ -1476,32 +1472,7 @@ static void hv_balloon_ensure_mr(HvBalloon *balloon)
     balloon->mr = g_new0(MemoryRegion, 1);
     memory_region_init(balloon->mr, OBJECT(balloon), TYPE_HV_BALLOON,
                        memory_region_size(hostmem_mr));
-
-    /*
-     * The VM can indicate an alignment up to 32 GiB. Memory device core can
-     * usually only handle/guarantee 1 GiB alignment. The user will have to
-     * specify a larger maxmem eventually.
-     *
-     * The memory device core will warn the user in case maxmem might have to be
-     * increased and will fail plugging the device if there is not sufficient
-     * space after alignment.
-     *
-     * TODO: we could do the alignment ourselves in a slightly bigger region.
-     * But this feels better, although the warning might be annoying. Maybe
-     * we can optimize that in the future (e.g., with such a device on the
-     * cmdline place/size the device memory region differently.
-     */
-    balloon->mr->align = MAX(32 * GiB, memory_region_get_alignment(hostmem_mr));
-}
-
-static void hv_balloon_free_mr(HvBalloon *balloon)
-{
-    if (!balloon->mr) {
-        return;
-    }
-
-    object_unparent(OBJECT(balloon->mr));
-    g_clear_pointer(&balloon->mr, g_free);
+    balloon->mr->align = memory_region_get_alignment(hostmem_mr);
 }
 
 static void hv_balloon_vmdev_realize(VMBusDevice *vdev, Error **errp)
@@ -1599,7 +1570,7 @@ static void hv_balloon_vmdev_reset(VMBusDevice *vdev)
  */
 static void hv_balloon_unrealize_finalize_common(HvBalloon *balloon)
 {
-    hv_balloon_free_mr(balloon);
+    g_clear_pointer(&balloon->mr, g_free);
     balloon->addr = 0;
 
     balloon->memslot_count = 0;
@@ -1651,6 +1622,25 @@ static MemoryRegion *hv_balloon_md_get_memory_region(MemoryDeviceState *md,
     hv_balloon_ensure_mr(balloon);
 
     return balloon->mr;
+}
+
+static uint64_t hv_balloon_md_get_min_alignment(const MemoryDeviceState *md)
+{
+    /*
+     * The VM can indicate an alignment up to 32 GiB. Memory device core can
+     * usually only handle/guarantee 1 GiB alignment. The user will have to
+     * specify a larger maxmem eventually.
+     *
+     * The memory device core will warn the user in case maxmem might have to be
+     * increased and will fail plugging the device if there is not sufficient
+     * space after alignment.
+     *
+     * TODO: we could do the alignment ourselves in a slightly bigger region.
+     * But this feels better, although the warning might be annoying. Maybe
+     * we can optimize that in the future (e.g., with such a device on the
+     * cmdline place/size the device memory region differently.
+     */
+    return 32 * GiB;
 }
 
 static void hv_balloon_md_fill_device_info(const MemoryDeviceState *md,
@@ -1730,7 +1720,7 @@ static void hv_balloon_finalize(Object *obj)
     hv_balloon_unrealize_finalize_common(balloon);
 }
 
-static Property hv_balloon_properties[] = {
+static const Property hv_balloon_properties[] = {
     DEFINE_PROP_BOOL("status-report", HvBalloon,
                      status_report.enabled, false),
 
@@ -1738,11 +1728,9 @@ static Property hv_balloon_properties[] = {
     DEFINE_PROP_LINK(HV_BALLOON_MEMDEV_PROP, HvBalloon, hostmem,
                      TYPE_MEMORY_BACKEND, HostMemoryBackend *),
     DEFINE_PROP_UINT64(HV_BALLOON_ADDR_PROP, HvBalloon, addr, 0),
-
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void hv_balloon_class_init(ObjectClass *klass, void *data)
+static void hv_balloon_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VMBusDeviceClass *vdc = VMBUS_DEVICE_CLASS(klass);
@@ -1765,5 +1753,6 @@ static void hv_balloon_class_init(ObjectClass *klass, void *data)
     mdc->get_memory_region = hv_balloon_md_get_memory_region;
     mdc->decide_memslots = hv_balloon_decide_memslots;
     mdc->get_memslots = hv_balloon_get_memslots;
+    mdc->get_min_alignment = hv_balloon_md_get_min_alignment;
     mdc->fill_device_info = hv_balloon_md_fill_device_info;
 }

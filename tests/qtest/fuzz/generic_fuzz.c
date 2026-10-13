@@ -11,6 +11,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/range.h"
 
 #include <wordexp.h>
 
@@ -19,12 +20,12 @@
 #include "tests/qtest/libqos/pci-pc.h"
 #include "fuzz.h"
 #include "string.h"
-#include "exec/memory.h"
-#include "exec/ramblock.h"
-#include "hw/qdev-core.h"
+#include "system/memory.h"
+#include "system/ram_addr.h"
+#include "hw/core/qdev.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "generic_fuzz_configs.h"
 #include "hw/mem/sparse-mem.h"
 
@@ -211,7 +212,7 @@ void fuzz_dma_read_cb(size_t addr, size_t len, MemoryRegion *mr)
          i < dma_regions->len && (avoid_double_fetches || qtest_log_enabled);
          ++i) {
         region = g_array_index(dma_regions, address_range, i);
-        if (addr < region.addr + region.size && addr + len > region.addr) {
+        if (ranges_overlap(addr, len, region.addr, region.size)) {
             double_fetch = true;
             if (addr < region.addr
                 && avoid_double_fetches) {
@@ -571,7 +572,6 @@ static void op_add_dma_pattern(QTestState *s,
     pattern p = {a.index, a.stride, len - sizeof(a), data + sizeof(a)};
     p.index = a.index % p.len;
     g_array_append_val(dma_patterns, p);
-    return;
 }
 
 static void op_clear_dma_patterns(QTestState *s,
@@ -776,7 +776,7 @@ static void generic_pre_fuzz(QTestState *s)
     if (!getenv("QEMU_FUZZ_OBJECTS")) {
         usage();
     }
-    if (getenv("QTEST_LOG")) {
+    if (qtest_verbose("fuzz")) {
         qtest_log_enabled = 1;
     }
     if (getenv("QEMU_AVOID_DOUBLE_FETCH")) {

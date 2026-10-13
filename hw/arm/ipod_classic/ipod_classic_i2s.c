@@ -33,10 +33,10 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
-#include "audio/audio.h"
+#include "qemu/audio.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "hw/arm/ipod_classic/ipod_classic_i2s.h"
@@ -283,26 +283,26 @@ static uint32_t i2s_sample_rate(IPodClassicI2SState *s)
  * AUDIOLIVE=1: besides (or instead of) the WAV, feed the same FIFO PCM to a
  * QEMU SWVoiceOut so playback comes out of the host speakers through whatever
  * -audio/-audiodev backend is active (pa/PulseAudio under WSLg). Template:
- * hw/audio/lm4549.c -- register a card, AUD_open_out a 16-bit-stereo voice,
- * push PCM with AUD_write.
+ * hw/audio/lm4549.c -- audio_be_check() a backend, audio_be_open_out() a
+ * 16-bit-stereo voice, push PCM with audio_be_write().
  *
  * TWO rules copied from lm4549 that are load-bearing:
  *  (1) The voice MUST be opened at device realize, BEFORE the VM starts running.
- *      AUD_set_active_out() only arms the mixer timer when s->vm_running is set
- *      (audio/audio.c AUD_set_active_out, "if (s->vm_running) audio_reset_timer")
- *      and that flag is set by the audio vm-change-state handler, which fires
- *      once at VM start. A card first registered LAZILY during playback misses
- *      that transition, its timer never starts, and not one sample is clocked
- *      out (the wav backend then holds a 44-byte header; pa stays silent).
- *  (2) Push with AUD_write from the write path (i2s_live_sample) and from the
- *      out callback; AUD_write takes only what the mixer can hold now, the rest
- *      waits in the ring for the next push.
+ *      audio_be_set_active_out() only arms the mixer timer while the VM is
+ *      running (audio/audio-mixeng-be.c audio_mixeng_backend_set_active_out(),
+ *      "if (runstate_is_running()) audio_reset_timer") and that flag is set by
+ *      the audio vm-change-state handler, which fires once at VM start. A voice
+ *      first opened LAZILY during playback misses that transition, its timer
+ *      never starts, and not one sample is clocked out (the wav backend then
+ *      holds a 44-byte header; pa stays silent).
+ *  (2) Push with audio_be_write from the write path (i2s_live_sample) and from
+ *      the out callback; audio_be_write takes only what the mixer can hold now,
+ *      the rest waits in the ring for the next push.
  * One I2S instance exists, so a file-scope struct is enough (like i2s_wav).
  */
 static struct {
-    QEMUSoundCard card;
+    AudioBackend *audio_be;
     SWVoiceOut *voice;
-    bool registered;
     bool primed;             /* jitter cushion built; mixer output active */
     uint32_t rate;
     uint8_t buf[1u << 20];   /* 1 MiB ~= 5.4 s @ 48000 stereo 16-bit */
@@ -366,7 +366,8 @@ static void i2s_live_drain(void)
         uint32_t contig = (uint32_t)sizeof(i2s_live.buf) - rdpos;
         uint32_t used = i2s_live_used();
         uint32_t chunk = used < contig ? used : contig;
-        size_t wrote = AUD_write(i2s_live.voice, &i2s_live.buf[rdpos], chunk);
+        size_t wrote = audio_be_write(i2s_live.audio_be, i2s_live.voice,
+                                      &i2s_live.buf[rdpos], chunk);
 
         if (wrote == 0) {
             break;      /* mixer full; the rest waits for the next push */
@@ -384,30 +385,31 @@ static void i2s_live_out_cb(void *opaque, int avail)
 
 /* Open (or reconfigure) the voice for `rate`. Called at realize and on a rate
  * change. No-op unless AUDIOLIVE is set. */
-static void i2s_live_open(uint32_t rate)
+static void i2s_live_open(IPodClassicI2SState *s, uint32_t rate)
 {
     struct audsettings as = {
         .freq = (int)rate,
         .nchannels = 2,
         .fmt = AUDIO_FORMAT_S16,
-        .endianness = 0,
+        .big_endian = false,
     };
 
     if (!i2s_live_on()) {
         return;
     }
-    if (!i2s_live.registered) {
+    if (!i2s_live.audio_be) {
         Error *err = NULL;
-        if (!AUD_register_card("s5l8702.i2s", &i2s_live.card, &err)) {
+
+        if (!audio_be_check(&s->audio_be, &err)) {
             error_report_err(err);
             fprintf(stderr, "AUDIOLIVE: no audio backend (use -audio driver=pa)\n");
             return;
         }
-        i2s_live.registered = true;
+        i2s_live.audio_be = s->audio_be;
     }
-    i2s_live.voice = AUD_open_out(&i2s_live.card, i2s_live.voice,
-                                  "s5l8702.i2s.out", NULL,
-                                  i2s_live_out_cb, &as);
+    i2s_live.voice = audio_be_open_out(i2s_live.audio_be, i2s_live.voice,
+                                       "s5l8702.i2s.out", NULL,
+                                       i2s_live_out_cb, &as);
     if (i2s_live.voice) {
         i2s_live.rate = rate;
     }
@@ -426,7 +428,7 @@ static void i2s_live_sample(IPodClassicI2SState *s, uint64_t value, unsigned siz
     }
     rate = i2s_sample_rate(s);
     if (rate != i2s_live.rate) {
-        i2s_live_open(rate);          /* retune to the real sample rate */
+        i2s_live_open(s, rate);       /* retune to the real sample rate */
         if (!i2s_live.voice) {
             return;
         }
@@ -447,7 +449,8 @@ static void i2s_live_sample(IPodClassicI2SState *s, uint64_t value, unsigned siz
      * mixer's out callback drains the ring at its own real-time cadence.
      *
      * The hot path here runs once per PCM frame (~48000/s), so it must stay cheap:
-     * we only append to the ring and never call AUD_write or AUD_set_active_out
+     * we only append to the ring and never call audio_be_write or
+     * audio_be_set_active_out
      * per sample. Draining from the callback instead keeps this write handler
      * light, which matters because MP3 decode on the emulated ARM is already close
      * to the real-time budget -- extra per-sample work here directly steals the
@@ -458,7 +461,7 @@ static void i2s_live_sample(IPodClassicI2SState *s, uint64_t value, unsigned siz
             return;
         }
         i2s_live.primed = true;
-        AUD_set_active_out(i2s_live.voice, 1);
+        audio_be_set_active_out(i2s_live.audio_be, i2s_live.voice, 1);
         fprintf(stderr, "AUDIOLIVE: primed, output active\n");
     }
 }
@@ -682,7 +685,7 @@ static void ipod_classic_i2s_reset(DeviceState *dev)
     /* Silence the live-audio voice on reset and re-arm priming; the cushion
      * rebuilds from the next PCM samples. */
     if (i2s_live.voice) {
-        AUD_set_active_out(i2s_live.voice, 0);
+        audio_be_set_active_out(i2s_live.audio_be, i2s_live.voice, 0);
     }
     i2s_live.primed = false;
     i2s_live.rd = 0;
@@ -703,12 +706,12 @@ static void ipod_classic_i2s_realize(DeviceState *dev, Error **errp)
 
     /*
      * Open the live-audio voice HERE, at realize, before the VM starts running,
-     * so the audio subsystem's vm-change-state handler sets s->vm_running and
-     * AUD_set_active_out() later arms the mixer timer (see i2s_live_open). A
-     * default rate is fine; i2s_live_sample retunes to the real I2SCLKDIV rate
+     * so the audio subsystem's vm-change-state handler marks the VM running and
+     * audio_be_set_active_out() later arms the mixer timer (see i2s_live_open).
+     * A default rate is fine; i2s_live_sample retunes to the real I2SCLKDIV rate
      * on the first PCM sample. No-op unless AUDIOLIVE is set.
      */
-    i2s_live_open(I2S_LIVE_DEFAULT_RATE);
+    i2s_live_open(s, I2S_LIVE_DEFAULT_RATE);
 }
 
 static int ipod_classic_i2s_post_load(void *opaque, int version_id)
@@ -748,15 +751,20 @@ static const VMStateDescription vmstate_ipod_classic_i2s = {
     },
 };
 
-static void ipod_classic_i2s_class_init(ObjectClass *klass, void *data)
+static const Property ipod_classic_i2s_properties[] = {
+    DEFINE_AUDIO_PROPERTIES(IPodClassicI2SState, audio_be),
+};
+
+static void ipod_classic_i2s_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 I2S transmitter";
     dc->realize = ipod_classic_i2s_realize;
-    dc->reset = ipod_classic_i2s_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_i2s_reset);
     dc->vmsd = &vmstate_ipod_classic_i2s;
     dc->user_creatable = false;
+    device_class_set_props(dc, ipod_classic_i2s_properties);
 }
 
 static const TypeInfo ipod_classic_i2s_info = {

@@ -76,21 +76,7 @@ struct target_vfp_sigframe {
     struct target_user_vfp_exc ufp_exc;
 } __attribute__((__aligned__(8)));
 
-struct target_iwmmxt_sigframe {
-    abi_ulong magic;
-    abi_ulong size;
-    uint64_t regs[16];
-    /* Note that not all the coprocessor control registers are stored here */
-    uint32_t wcssf;
-    uint32_t wcasf;
-    uint32_t wcgr0;
-    uint32_t wcgr1;
-    uint32_t wcgr2;
-    uint32_t wcgr3;
-} __attribute__((__aligned__(8)));
-
 #define TARGET_VFP_MAGIC 0x56465001
-#define TARGET_IWMMXT_MAGIC 0x12ef842a
 
 struct sigframe
 {
@@ -177,7 +163,7 @@ setup_return(CPUARMState *env, struct target_sigaction *ka, int usig,
     abi_ulong handler = 0;
     abi_ulong handler_fdpic_GOT = 0;
     abi_ulong retcode;
-    bool is_fdpic = info_is_fdpic(((TaskState *)thread_cpu->opaque)->info);
+    bool is_fdpic = info_is_fdpic(get_task_state(thread_cpu)->info);
     bool is_rt = ka->sa_flags & TARGET_SA_SIGINFO;
     bool thumb;
 
@@ -267,25 +253,6 @@ static abi_ulong *setup_sigframe_vfp(abi_ulong *regspace, CPUARMState *env)
     return (abi_ulong*)(vfpframe+1);
 }
 
-static abi_ulong *setup_sigframe_iwmmxt(abi_ulong *regspace, CPUARMState *env)
-{
-    int i;
-    struct target_iwmmxt_sigframe *iwmmxtframe;
-    iwmmxtframe = (struct target_iwmmxt_sigframe *)regspace;
-    __put_user(TARGET_IWMMXT_MAGIC, &iwmmxtframe->magic);
-    __put_user(sizeof(*iwmmxtframe), &iwmmxtframe->size);
-    for (i = 0; i < 16; i++) {
-        __put_user(env->iwmmxt.regs[i], &iwmmxtframe->regs[i]);
-    }
-    __put_user(env->vfp.xregs[ARM_IWMMXT_wCSSF], &iwmmxtframe->wcssf);
-    __put_user(env->vfp.xregs[ARM_IWMMXT_wCASF], &iwmmxtframe->wcssf);
-    __put_user(env->vfp.xregs[ARM_IWMMXT_wCGR0], &iwmmxtframe->wcgr0);
-    __put_user(env->vfp.xregs[ARM_IWMMXT_wCGR1], &iwmmxtframe->wcgr1);
-    __put_user(env->vfp.xregs[ARM_IWMMXT_wCGR2], &iwmmxtframe->wcgr2);
-    __put_user(env->vfp.xregs[ARM_IWMMXT_wCGR3], &iwmmxtframe->wcgr3);
-    return (abi_ulong*)(iwmmxtframe+1);
-}
-
 static void setup_sigframe(struct target_ucontext *uc,
                            target_sigset_t *set, CPUARMState *env)
 {
@@ -305,9 +272,6 @@ static void setup_sigframe(struct target_ucontext *uc,
     regspace = uc->tuc_regspace;
     if (cpu_isar_feature(aa32_vfp_simd, env_archcpu(env))) {
         regspace = setup_sigframe_vfp(regspace, env);
-    }
-    if (arm_feature(env, ARM_FEATURE_IWMMXT)) {
-        regspace = setup_sigframe_iwmmxt(regspace, env);
     }
 
     /* Write terminating magic word */
@@ -357,7 +321,7 @@ void setup_rt_frame(int usig, struct target_sigaction *ka,
 
     info_addr = frame_addr + offsetof(struct rt_sigframe, info);
     uc_addr = frame_addr + offsetof(struct rt_sigframe, sig.uc);
-    tswap_siginfo(&frame->info, info);
+    frame->info = *info;
 
     setup_sigframe(&frame->sig.uc, set, env);
 
@@ -435,31 +399,6 @@ static abi_ulong *restore_sigframe_vfp(CPUARMState *env, abi_ulong *regspace)
     return (abi_ulong*)(vfpframe + 1);
 }
 
-static abi_ulong *restore_sigframe_iwmmxt(CPUARMState *env,
-                                          abi_ulong *regspace)
-{
-    int i;
-    abi_ulong magic, sz;
-    struct target_iwmmxt_sigframe *iwmmxtframe;
-    iwmmxtframe = (struct target_iwmmxt_sigframe *)regspace;
-
-    __get_user(magic, &iwmmxtframe->magic);
-    __get_user(sz, &iwmmxtframe->size);
-    if (magic != TARGET_IWMMXT_MAGIC || sz != sizeof(*iwmmxtframe)) {
-        return 0;
-    }
-    for (i = 0; i < 16; i++) {
-        __get_user(env->iwmmxt.regs[i], &iwmmxtframe->regs[i]);
-    }
-    __get_user(env->vfp.xregs[ARM_IWMMXT_wCSSF], &iwmmxtframe->wcssf);
-    __get_user(env->vfp.xregs[ARM_IWMMXT_wCASF], &iwmmxtframe->wcssf);
-    __get_user(env->vfp.xregs[ARM_IWMMXT_wCGR0], &iwmmxtframe->wcgr0);
-    __get_user(env->vfp.xregs[ARM_IWMMXT_wCGR1], &iwmmxtframe->wcgr1);
-    __get_user(env->vfp.xregs[ARM_IWMMXT_wCGR2], &iwmmxtframe->wcgr2);
-    __get_user(env->vfp.xregs[ARM_IWMMXT_wCGR3], &iwmmxtframe->wcgr3);
-    return (abi_ulong*)(iwmmxtframe + 1);
-}
-
 static int do_sigframe_return(CPUARMState *env,
                               target_ulong context_addr,
                               struct target_ucontext *uc)
@@ -478,12 +417,6 @@ static int do_sigframe_return(CPUARMState *env,
     regspace = uc->tuc_regspace;
     if (cpu_isar_feature(aa32_vfp_simd, env_archcpu(env))) {
         regspace = restore_sigframe_vfp(env, regspace);
-        if (!regspace) {
-            return 1;
-        }
-    }
-    if (arm_feature(env, ARM_FEATURE_IWMMXT)) {
-        regspace = restore_sigframe_iwmmxt(env, regspace);
         if (!regspace) {
             return 1;
         }

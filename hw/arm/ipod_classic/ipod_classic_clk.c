@@ -12,14 +12,13 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "exec/cpu-common.h"
-#include "exec/exec-all.h"
+#include "system/physmem.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
 #include "migration/vmstate.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 #include "qemu/error-report.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "hw/arm/ipod_classic/ipod_classic_clk.h"
 #include "hw/arm/ipod_classic/ipod_classic.h"
 
@@ -134,7 +133,7 @@ static void ipod_classic_clk_write(void *opaque, hwaddr offset,
         if (value != 0) {
             char tag[9] = { 0 };
 
-            cpu_physical_memory_read(S5L8702_BOOT_TAG_ADDR, tag, 8);
+            physical_memory_read(S5L8702_BOOT_TAG_ADDR, tag, 8);
             for (int i = 0; i < 8; i++) {
                 if (tag[i] < 0x20 || tag[i] > 0x7e) {
                     tag[i] = '.';
@@ -215,12 +214,12 @@ static const VMStateDescription vmstate_ipod_classic_clk = {
     },
 };
 
-static void ipod_classic_clk_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_clk_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 clock and PLL block";
-    dc->reset = ipod_classic_clk_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_clk_reset);
     dc->vmsd = &vmstate_ipod_classic_clk;
 }
 

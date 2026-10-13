@@ -18,6 +18,11 @@ config ARM_SBCON_I2C
     bool
     select BITBANG_I2C
 
+config DESIGNWARE_I2C
+    bool
+    select REGISTER
+    select I2C
+
 config ACPI_SMBUS
     bool
     select SMBUS
@@ -45,3 +50,7 @@ config PCA954X
 config PMBUS
     bool
     select SMBUS
+
+config BCM2835_I2C
+    bool
+    select I2C

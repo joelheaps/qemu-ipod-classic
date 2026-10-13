@@ -10,9 +10,8 @@
 #ifndef HW_HYPERV_HV_BALLOON_OUR_RANGE_MEMSLOTS_H
 #define HW_HYPERV_HV_BALLOON_OUR_RANGE_MEMSLOTS_H
 
-#include "qemu/osdep.h"
 
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "qom/object.h"
 #include "hv-balloon-page_range_tree.h"
 

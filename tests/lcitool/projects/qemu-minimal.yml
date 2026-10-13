@@ -4,10 +4,10 @@ packages:
  - bash
  - bc
  - bison
+ - bzip2
  - ccache
  - findutils
  - flex
- - g++
  - gcc
  - gcc-native
  - glib2

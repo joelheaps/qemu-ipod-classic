@@ -1,12 +1,10 @@
 # qemu-ipod
 
-A QEMU fork that emulates iPod hardware closely enough to boot and run Apple's own firmware, aimed at the iPod classic 6G (with the video 5G work kept intact). This glossary fixes the vocabulary for the firmware and for the ways the emulator is run.
+A QEMU fork that emulates iPod hardware closely enough to boot and run Apple's own firmware, aimed at the iPod classic 6G. This glossary fixes the vocabulary for the firmware and for the ways the emulator is run.
 
 ## Devices
 
 **iPod Classic 6G**: The S5L8702-based iPod classic (Apple codename `N25`); the primary emulation target. _Avoid_: classic, 6G, iPod classic
-
-**iPod Video 5G**: The PP5022/BCM-based fifth-generation iPod (the "iPod with video"); the older target. _Avoid_: 5G, video iPod
 
 ## Firmware
 

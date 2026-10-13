@@ -11,8 +11,13 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "exec/address-spaces.h"
-#include "sysemu/kvm.h"
+#include "system/address-spaces.h"
+#include "system/memory.h"
+#include "exec/target_page.h"
+#include "exec/cpu-common.h"
+#include "linux/kvm.h"
+#include "system/kvm.h"
+#include "system/physmem.h"
 #include "qemu/bitops.h"
 #include "qemu/error-report.h"
 #include "qemu/lockable.h"
@@ -21,6 +26,7 @@
 #include "qemu/rcu_queue.h"
 #include "hw/hyperv/hyperv.h"
 #include "qom/object.h"
+#include "target/i386/kvm/hyperv-proto.h"
 
 struct SynICState {
     DeviceState parent_obj;
@@ -52,6 +58,11 @@ bool hyperv_is_synic_enabled(void)
 static SynICState *get_synic(CPUState *cs)
 {
     return SYNIC(object_resolve_path_component(OBJECT(cs), "synic"));
+}
+
+bool hyperv_is_synic_present(CPUState *cs)
+{
+    return get_synic(cs);
 }
 
 static void synic_update(SynICState *synic, bool sctl_enable,
@@ -129,12 +140,12 @@ static void synic_reset(DeviceState *dev)
     assert(QLIST_EMPTY(&synic->sint_routes));
 }
 
-static void synic_class_init(ObjectClass *klass, void *data)
+static void synic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = synic_realize;
-    dc->reset = synic_reset;
+    device_class_set_legacy_reset(dc, synic_reset);
     dc->user_creatable = false;
 }
 
@@ -226,9 +237,7 @@ struct HvSintRoute {
 
 static CPUState *hyperv_find_vcpu(uint32_t vp_index)
 {
-    CPUState *cs = qemu_get_cpu(vp_index);
-    assert(hyperv_vp_index(cs) == vp_index);
-    return cs;
+    return qemu_get_cpu(vp_index);
 }
 
 /*
@@ -369,6 +378,31 @@ int hyperv_set_event_flag(HvSintRoute *sint_route, unsigned eventno)
     return ret;
 }
 
+static int kvm_irqchip_add_hv_sint_route(KVMState *s, uint32_t vcpu, uint32_t sint)
+{
+    struct kvm_irq_routing_entry kroute = {};
+    int virq;
+
+    if (!kvm_gsi_routing_enabled()) {
+        return -ENOSYS;
+    }
+    virq = kvm_irqchip_get_virq(s);
+    if (virq < 0) {
+        return virq;
+    }
+
+    kroute.gsi = virq;
+    kroute.type = KVM_IRQ_ROUTING_HV_SINT;
+    kroute.flags = 0;
+    kroute.u.hv_sint.vcpu = vcpu;
+    kroute.u.hv_sint.sint = sint;
+
+    kvm_add_routing_entry(s, &kroute);
+    kvm_irqchip_commit_routes(s);
+
+    return virq;
+}
+
 HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
                                    HvSintMsgCb cb, void *cb_data)
 {
@@ -408,7 +442,7 @@ HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
         sint_route->staged_msg->cb_data = cb_data;
 
         r = event_notifier_init(ack_notifier, false);
-        if (r) {
+        if (r < 0) {
             goto cleanup_err_sint;
         }
         event_notifier_set_handler(ack_notifier, sint_ack_handler);
@@ -422,7 +456,7 @@ HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
 
     /* We need to setup a GSI for this SintRoute */
     r = event_notifier_init(&sint_route->sint_set_notifier, false);
-    if (r) {
+    if (r < 0) {
         goto cleanup_err_sint;
     }
 
@@ -587,7 +621,7 @@ uint16_t hyperv_hcall_post_message(uint64_t param, bool fast)
     }
 
     len = sizeof(*msg);
-    msg = cpu_physical_memory_map(param, &len, 0);
+    msg = physical_memory_map(param, &len, 0);
     if (len < sizeof(*msg)) {
         ret = HV_STATUS_INSUFFICIENT_MEMORY;
         goto unmap;
@@ -608,7 +642,7 @@ uint16_t hyperv_hcall_post_message(uint64_t param, bool fast)
     }
 
 unmap:
-    cpu_physical_memory_unmap(msg, len, 0, 0);
+    physical_memory_unmap(msg, len, 0, 0);
     return ret;
 }
 
@@ -673,13 +707,16 @@ uint16_t hyperv_hcall_signal_event(uint64_t param, bool fast)
     EventFlagHandler *handler;
 
     if (unlikely(!fast)) {
+        MemTxResult result;
         hwaddr addr = param;
 
         if (addr & (__alignof__(addr) - 1)) {
             return HV_STATUS_INVALID_ALIGNMENT;
         }
 
-        param = ldq_phys(&address_space_memory, addr);
+        param = address_space_ldq_le(&address_space_memory, addr,
+                                     MEMTXATTRS_UNSPECIFIED, &result);
+        assert(result == MEMTX_OK);
     }
 
     /*
@@ -728,7 +765,7 @@ uint16_t hyperv_hcall_reset_dbg_session(uint64_t outgpa)
     }
 
     len = sizeof(*reset_dbg_session);
-    reset_dbg_session = cpu_physical_memory_map(outgpa, &len, 1);
+    reset_dbg_session = physical_memory_map(outgpa, &len, 1);
     if (!reset_dbg_session || len < sizeof(*reset_dbg_session)) {
         ret = HV_STATUS_INSUFFICIENT_MEMORY;
         goto cleanup;
@@ -751,7 +788,7 @@ uint16_t hyperv_hcall_reset_dbg_session(uint64_t outgpa)
            sizeof(reset_dbg_session->target_mac));
 cleanup:
     if (reset_dbg_session) {
-        cpu_physical_memory_unmap(reset_dbg_session,
+        physical_memory_unmap(reset_dbg_session,
                                   sizeof(*reset_dbg_session), 1, len);
     }
 
@@ -773,14 +810,14 @@ uint16_t hyperv_hcall_retreive_dbg_data(uint64_t ingpa, uint64_t outgpa,
     }
 
     in_len = sizeof(*debug_data_in);
-    debug_data_in = cpu_physical_memory_map(ingpa, &in_len, 0);
+    debug_data_in = physical_memory_map(ingpa, &in_len, 0);
     if (!debug_data_in || in_len < sizeof(*debug_data_in)) {
         ret = HV_STATUS_INSUFFICIENT_MEMORY;
         goto cleanup;
     }
 
     out_len = sizeof(*debug_data_out);
-    debug_data_out = cpu_physical_memory_map(outgpa, &out_len, 1);
+    debug_data_out = physical_memory_map(outgpa, &out_len, 1);
     if (!debug_data_out || out_len < sizeof(*debug_data_out)) {
         ret = HV_STATUS_INSUFFICIENT_MEMORY;
         goto cleanup;
@@ -806,12 +843,12 @@ uint16_t hyperv_hcall_retreive_dbg_data(uint64_t ingpa, uint64_t outgpa,
         debug_data_in->count - msg.u.recv.retrieved_count;
 cleanup:
     if (debug_data_out) {
-        cpu_physical_memory_unmap(debug_data_out, sizeof(*debug_data_out), 1,
+        physical_memory_unmap(debug_data_out, sizeof(*debug_data_out), 1,
                                   out_len);
     }
 
     if (debug_data_in) {
-        cpu_physical_memory_unmap(debug_data_in, sizeof(*debug_data_in), 0,
+        physical_memory_unmap(debug_data_in, sizeof(*debug_data_in), 0,
                                   in_len);
     }
 
@@ -832,7 +869,7 @@ uint16_t hyperv_hcall_post_dbg_data(uint64_t ingpa, uint64_t outgpa, bool fast)
     }
 
     in_len = sizeof(*post_data_in);
-    post_data_in = cpu_physical_memory_map(ingpa, &in_len, 0);
+    post_data_in = physical_memory_map(ingpa, &in_len, 0);
     if (!post_data_in || in_len < sizeof(*post_data_in)) {
         ret = HV_STATUS_INSUFFICIENT_MEMORY;
         goto cleanup;
@@ -844,7 +881,7 @@ uint16_t hyperv_hcall_post_dbg_data(uint64_t ingpa, uint64_t outgpa, bool fast)
     }
 
     out_len = sizeof(*post_data_out);
-    post_data_out = cpu_physical_memory_map(outgpa, &out_len, 1);
+    post_data_out = physical_memory_map(outgpa, &out_len, 1);
     if (!post_data_out || out_len < sizeof(*post_data_out)) {
         ret = HV_STATUS_INSUFFICIENT_MEMORY;
         goto cleanup;
@@ -864,12 +901,12 @@ uint16_t hyperv_hcall_post_dbg_data(uint64_t ingpa, uint64_t outgpa, bool fast)
                                          HV_STATUS_SUCCESS;
 cleanup:
     if (post_data_out) {
-        cpu_physical_memory_unmap(post_data_out,
+        physical_memory_unmap(post_data_out,
                                   sizeof(*post_data_out), 1, out_len);
     }
 
     if (post_data_in) {
-        cpu_physical_memory_unmap(post_data_in,
+        physical_memory_unmap(post_data_in,
                                   sizeof(*post_data_in), 0, in_len);
     }
 
@@ -946,4 +983,16 @@ uint64_t hyperv_syndbg_query_options(void)
     }
 
     return msg.u.query_options.options;
+}
+
+static bool vmbus_recommended_features_enabled;
+
+bool hyperv_are_vmbus_recommended_features_enabled(void)
+{
+    return vmbus_recommended_features_enabled;
+}
+
+void hyperv_set_vmbus_recommended_features_enabled(void)
+{
+    vmbus_recommended_features_enabled = true;
 }

@@ -12,11 +12,12 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/range.h"
 #include "qapi/error.h"
 
-#include "sysemu/memory_mapping.h"
-#include "exec/memory.h"
-#include "exec/address-spaces.h"
+#include "system/memory_mapping.h"
+#include "system/memory.h"
+#include "system/address-spaces.h"
 #include "hw/core/cpu.h"
 
 //#define DEBUG_GUEST_PHYS_REGION_ADD
@@ -195,7 +196,7 @@ typedef struct GuestPhysListener {
 } GuestPhysListener;
 
 static void guest_phys_block_add_section(GuestPhysListener *g,
-                                         MemoryRegionSection *section)
+                                         const MemoryRegionSection *section)
 {
     const hwaddr target_start = section->offset_within_address_space;
     const hwaddr target_end = target_start + int128_get64(section->size);
@@ -247,7 +248,7 @@ static void guest_phys_block_add_section(GuestPhysListener *g,
 #endif
 }
 
-static int guest_phys_ram_populate_cb(MemoryRegionSection *section,
+static int guest_phys_ram_populate_cb(const MemoryRegionSection *section,
                                       void *opaque)
 {
     GuestPhysListener *g = opaque;
@@ -353,8 +354,7 @@ void memory_mapping_filter(MemoryMappingList *list, int64_t begin,
     MemoryMapping *cur, *next;
 
     QTAILQ_FOREACH_SAFE(cur, &list->head, next, next) {
-        if (cur->phys_addr >= begin + length ||
-            cur->phys_addr + cur->length <= begin) {
+        if (!ranges_overlap(cur->phys_addr, cur->length, begin, length)) {
             QTAILQ_REMOVE(&list->head, cur, next);
             g_free(cur);
             list->num--;

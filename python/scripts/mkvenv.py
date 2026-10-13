@@ -13,7 +13,6 @@ Commands:
     create    create a venv
     post_init
               post-venv initialization
-    ensure    Ensure that the specified package is installed.
     ensuregroup
               Ensure that the specified package group is installed.
 
@@ -33,18 +32,6 @@ usage: mkvenv post_init [-h]
 
 options:
   -h, --help         show this help message and exit
-
---------------------------------------------------
-
-usage: mkvenv ensure [-h] [--online] [--dir DIR] dep_spec...
-
-positional arguments:
-  dep_spec    PEP 508 Dependency specification, e.g. 'meson>=0.61.5'
-
-options:
-  -h, --help  show this help message and exit
-  --online    Install packages from PyPI, if necessary.
-  --dir DIR   Path to vendored packages where we may install from.
 
 --------------------------------------------------
 
@@ -97,6 +84,7 @@ from typing import (
     Sequence,
     Tuple,
     Union,
+    cast,
 )
 import venv
 
@@ -104,31 +92,61 @@ import venv
 # Try to load distlib, with a fallback to pip's vendored version.
 # HAVE_DISTLIB is checked below, just-in-time, so that mkvenv does not fail
 # outside the venv or before a potential call to ensurepip in checkpip().
-HAVE_DISTLIB = True
+_import_ok = True
 try:
     import distlib.scripts
-    import distlib.version
 except ImportError:
     try:
         # Reach into pip's cookie jar.  pylint and flake8 don't understand
         # that these imports will be used via distlib.xxx.
         from pip._vendor import distlib
         import pip._vendor.distlib.scripts  # noqa, pylint: disable=unused-import
-        import pip._vendor.distlib.version  # noqa, pylint: disable=unused-import
     except ImportError:
-        HAVE_DISTLIB = False
+        _import_ok = False
+
+HAVE_DISTLIB = _import_ok
+
+# pip 25.2 does not vendor distlib.version, but it uses vendored
+# packaging.version
+_import_ok = True
+try:
+    import distlib.version  # pylint: disable=ungrouped-imports
+except ImportError:
+    try:
+        # pylint: disable=unused-import,ungrouped-imports
+        import pip._vendor.distlib.version  # noqa
+    except ImportError:
+        _import_ok = False
+
+HAVE_DISTLIB_VERSION = _import_ok
+
+_import_ok = True
+try:
+    # Do not bother importing non-vendored packaging, because it is not
+    # in stdlib.
+    from pip._vendor import packaging
+    # pylint: disable=unused-import
+    import pip._vendor.packaging.requirements  # noqa
+    import pip._vendor.packaging.version  # noqa
+except ImportError:
+    _import_ok = False
+
+HAVE_PACKAGING_VERSION = _import_ok
+
 
 # Try to load tomllib, with a fallback to tomli.
 # HAVE_TOMLLIB is checked below, just-in-time, so that mkvenv does not fail
 # outside the venv or before a potential call to ensurepip in checkpip().
-HAVE_TOMLLIB = True
+_import_ok = True
 try:
     import tomllib
 except ImportError:
     try:
         import tomli as tomllib
     except ImportError:
-        HAVE_TOMLLIB = False
+        _import_ok = False
+
+HAVE_TOMLLIB = _import_ok
 
 # Do not add any mandatory dependencies from outside the stdlib:
 # This script *must* be usable standalone!
@@ -144,6 +162,43 @@ def inside_a_venv() -> bool:
 
 class Ouch(RuntimeError):
     """An Exception class we can't confuse with a builtin."""
+
+
+class Matcher:
+    """Compatibility appliance for version/requirement string parsing."""
+    def __init__(self, name_and_constraint: str):
+        """Create a matcher from a requirement-like string."""
+        if HAVE_DISTLIB_VERSION:
+            self._m = distlib.version.LegacyMatcher(name_and_constraint)
+        elif HAVE_PACKAGING_VERSION:
+            self._m = packaging.requirements.Requirement(name_and_constraint)
+        else:
+            raise Ouch("found neither distlib.version nor packaging.version")
+        self.name = self._m.name
+
+    def match(self, version_str: str) -> bool:
+        """Return True if `version` satisfies the stored constraint."""
+        if HAVE_DISTLIB_VERSION:
+            return cast(
+                bool,
+                self._m.match(distlib.version.LegacyVersion(version_str))
+            )
+
+        assert HAVE_PACKAGING_VERSION
+        return cast(
+            bool,
+            self._m.specifier.contains(
+                packaging.version.Version(version_str), prereleases=True
+            )
+        )
+
+    def __str__(self) -> str:
+        """String representation delegated to the backend."""
+        return str(self._m)
+
+    def __repr__(self) -> str:
+        """Stable debug representation delegated to the backend."""
+        return repr(self._m)
 
 
 class QemuEnvBuilder(venv.EnvBuilder):
@@ -392,6 +447,9 @@ def make_venv(  # pylint: disable=too-many-arguments
         try:
             builder.create(str(env_dir))
         except SystemExit as exc:
+            # pylint 3.3 bug:
+            # pylint: disable=raising-non-exception, raise-missing-from
+
             # Some versions of the venv module raise SystemExit; *nasty*!
             # We want the exception that prompted it. It might be a subprocess
             # error that has output we *really* want to see.
@@ -604,6 +662,7 @@ def pip_install(
     args: Sequence[str],
     online: bool = False,
     wheels_dir: Optional[Union[str, Path]] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Use pip to install a package or package(s) as specified in @args.
@@ -625,10 +684,11 @@ def pip_install(
     if not online:
         full_args += ["--no-index"]
     if wheels_dir:
-        full_args += ["--find-links", f"file://{str(wheels_dir)}"]
+        full_args += ["--find-links", str(wheels_dir)]
     full_args += list(args)
     subprocess.run(
         full_args,
+        env=env,
         check=True,
     )
 
@@ -675,11 +735,16 @@ def _do_ensure(
     :param wheels_dir: If specified, search this path for packages.
     """
     absent = []
+    local_packages = []
     present = []
     canary = None
     for name, info in group.items():
+        if "path" in info:
+            pkgpath = Path(__file__).parents[2].joinpath(info["path"])
+            local_packages.append(str(pkgpath))
+            continue
         constraint = _make_version_constraint(info, False)
-        matcher = distlib.version.LegacyMatcher(name + constraint)
+        matcher = Matcher(name + constraint)
         print(f"mkvenv: checking for {matcher}", file=sys.stderr)
 
         dist: Optional[Distribution] = None
@@ -693,7 +758,7 @@ def _do_ensure(
             # Always pass installed package to pip, so that they can be
             # updated if the requested version changes
             or not _is_system_package(dist)
-            or not matcher.match(distlib.version.LegacyVersion(dist.version))
+            or not matcher.match(dist.version)
         ):
             absent.append(name + _make_version_constraint(info, True))
             if len(absent) == 1:
@@ -712,69 +777,36 @@ def _do_ensure(
             print(f"mkvenv: installing {', '.join(absent)}", file=sys.stderr)
             try:
                 pip_install(args=absent, online=online, wheels_dir=wheels_dir)
-                return None
+                absent = []
             except subprocess.CalledProcessError:
                 pass
 
-        return diagnose(
-            absent[0],
-            online,
-            wheels_dir,
-            canary,
+        if absent:
+            return diagnose(
+                absent[0],
+                online,
+                wheels_dir,
+                canary,
+            )
+
+    # Handle local packages separately and last so we can use different
+    # installation arguments (-e), and so that any dependencies that may
+    # be covered above will be handled according to the depfile
+    # specifications.
+    if local_packages:
+        print(f"mkvenv: installing {', '.join(local_packages)}",
+              file=sys.stderr)
+        env = dict(os.environ)
+        env['PIP_CONFIG_SETTINGS'] = "editable_mode=compat"
+        pip_install(
+            args=["--no-build-isolation",
+                  "-e"] + local_packages,
+            online=online,
+            wheels_dir=wheels_dir,
+            env=env,
         )
 
     return None
-
-
-def ensure(
-    dep_specs: Sequence[str],
-    online: bool = False,
-    wheels_dir: Optional[Union[str, Path]] = None,
-    prog: Optional[str] = None,
-) -> None:
-    """
-    Use pip to ensure we have the package specified by @dep_specs.
-
-    If the package is already installed, do nothing. If online and
-    wheels_dir are both provided, prefer packages found in wheels_dir
-    first before connecting to PyPI.
-
-    :param dep_specs:
-        PEP 508 dependency specifications. e.g. ['meson>=0.61.5'].
-    :param online: If True, fall back to PyPI.
-    :param wheels_dir: If specified, search this path for packages.
-    :param prog:
-        If specified, use this program name for error diagnostics that will
-        be presented to the user. e.g., 'sphinx-build' can be used as a
-        bellwether for the presence of 'sphinx'.
-    """
-
-    if not HAVE_DISTLIB:
-        raise Ouch("a usable distlib could not be found, please install it")
-
-    # Convert the depspecs to a dictionary, as if they came
-    # from a section in a pythondeps.toml file
-    group: Dict[str, Dict[str, str]] = {}
-    for spec in dep_specs:
-        name = distlib.version.LegacyMatcher(spec).name
-        group[name] = {}
-
-        spec = spec.strip()
-        pos = len(name)
-        ver = spec[pos:].strip()
-        if ver:
-            group[name]["accepted"] = ver
-
-        if prog:
-            group[name]["canary"] = prog
-            prog = None
-
-    result = _do_ensure(group, online, wheels_dir)
-    if result:
-        # Well, that's not good.
-        if result[1]:
-            raise Ouch(result[0])
-        raise SystemExit(f"\n{result[0]}\n\n")
 
 
 def _parse_groups(file: str) -> Dict[str, Dict[str, Any]]:
@@ -830,6 +862,12 @@ def ensure_group(
         if result[1]:
             raise Ouch(result[0])
         raise SystemExit(f"\n{result[0]}\n\n")
+
+    if inside_a_venv():
+        for group in groups:
+            path = Path(sys.prefix).joinpath(f"{group}.group")
+            with open(path, "w", encoding="UTF8"):
+                pass
 
 
 def post_venv_setup() -> None:
@@ -888,39 +926,6 @@ def _add_ensuregroup_subcommand(subparsers: Any) -> None:
     )
 
 
-def _add_ensure_subcommand(subparsers: Any) -> None:
-    subparser = subparsers.add_parser(
-        "ensure", help="Ensure that the specified package is installed."
-    )
-    subparser.add_argument(
-        "--online",
-        action="store_true",
-        help="Install packages from PyPI, if necessary.",
-    )
-    subparser.add_argument(
-        "--dir",
-        type=str,
-        action="store",
-        help="Path to vendored packages where we may install from.",
-    )
-    subparser.add_argument(
-        "--diagnose",
-        type=str,
-        action="store",
-        help=(
-            "Name of a shell utility to use for "
-            "diagnostics if this command fails."
-        ),
-    )
-    subparser.add_argument(
-        "dep_specs",
-        type=str,
-        action="store",
-        help="PEP 508 Dependency specification, e.g. 'meson>=0.61.5'",
-        nargs="+",
-    )
-
-
 def main() -> int:
     """CLI interface to make_qemu_venv. See module docstring."""
     if os.environ.get("DEBUG") or os.environ.get("GITLAB_CI"):
@@ -944,7 +949,6 @@ def main() -> int:
 
     _add_create_subcommand(subparsers)
     _add_post_init_subcommand(subparsers)
-    _add_ensure_subcommand(subparsers)
     _add_ensuregroup_subcommand(subparsers)
 
     args = parser.parse_args()
@@ -957,13 +961,6 @@ def main() -> int:
             )
         if args.command == "post_init":
             post_venv_setup()
-        if args.command == "ensure":
-            ensure(
-                dep_specs=args.dep_specs,
-                online=args.online,
-                wheels_dir=args.dir,
-                prog=args.diagnose,
-            )
         if args.command == "ensuregroup":
             ensure_group(
                 file=args.file,

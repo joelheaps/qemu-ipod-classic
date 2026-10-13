@@ -48,7 +48,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
@@ -556,7 +556,7 @@ static const MemoryRegionOps ipod_classic_lcd_ops = {
 
 /* ---------------------------------------------------------------- console */
 
-static void ipod_classic_lcd_gfx_update(void *opaque)
+static bool ipod_classic_lcd_gfx_update(void *opaque)
 {
     IPodClassicLCDState *s = opaque;
 
@@ -592,9 +592,9 @@ static void ipod_classic_lcd_gfx_update(void *opaque)
         memset(s->fb, 0, sizeof(s->fb));
         if (s->dirty) {
             s->dirty = false;
-            dpy_gfx_update_full(s->con);
+            qemu_console_update_full(s->con);
         }
-        return;
+        return true;
     }
 
     if (s->disp && ipod_classic_disp_compose(s->disp, s->fb,
@@ -606,10 +606,11 @@ static void ipod_classic_lcd_gfx_update(void *opaque)
     }
 
     if (!s->dirty) {
-        return;
+        return true;
     }
     s->dirty = false;
-    dpy_gfx_update_full(s->con);
+    qemu_console_update_full(s->con);
+    return true;
 }
 
 static void ipod_classic_lcd_invalidate(void *opaque)
@@ -680,14 +681,14 @@ static void ipod_classic_lcd_realize(DeviceState *dev, Error **errp)
     /* Only armed when LCD_FRAME_IRQ is set; see lcd_frame_irq(). */
     s->irq_off = timer_new_ns(QEMU_CLOCK_VIRTUAL, lcd_irq_off, s);
 
-    s->con = graphic_console_init(dev, 0, &ipod_classic_lcd_gfx_ops, s);
+    s->con = qemu_graphic_console_create(dev, 0, &ipod_classic_lcd_gfx_ops, s);
     qemu_console_resize(s->con, S5L8702_PANEL_WIDTH, S5L8702_PANEL_HEIGHT);
     surface = qemu_create_displaysurface_from(S5L8702_PANEL_WIDTH,
                                               S5L8702_PANEL_HEIGHT,
                                               PIXMAN_r5g6b5,
                                               S5L8702_PANEL_WIDTH * 2,
                                               (uint8_t *)s->fb);
-    dpy_gfx_replace_surface(s->con, surface);
+    qemu_console_set_surface(s->con, surface);
 }
 
 static int ipod_classic_lcd_post_load(void *opaque, int version_id)
@@ -747,13 +748,13 @@ static const VMStateDescription vmstate_ipod_classic_lcd = {
     },
 };
 
-static void ipod_classic_lcd_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_lcd_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 LCD interface";
     dc->realize = ipod_classic_lcd_realize;
-    dc->reset = ipod_classic_lcd_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_lcd_reset);
     dc->vmsd = &vmstate_ipod_classic_lcd;
     dc->user_creatable = false;
 }

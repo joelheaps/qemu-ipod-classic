@@ -16,7 +16,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/core/cpu.h"
 #include "hw/arm/ipod_classic/ipod_classic_gpio.h"
@@ -177,10 +177,9 @@ static void ipod_classic_gpio_reset(DeviceState *dev)
     }
 }
 
-static Property ipod_classic_gpio_props[] = {
+static const Property ipod_classic_gpio_props[] = {
     DEFINE_PROP_BOOL("media-present", IPodClassicGPIOState, media_present,
                      false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ipod_classic_gpio_realize(DeviceState *dev, Error **errp)
@@ -206,13 +205,13 @@ static const VMStateDescription vmstate_ipod_classic_gpio = {
     },
 };
 
-static void ipod_classic_gpio_class_init(ObjectClass *klass, void *data)
+static void ipod_classic_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "S5L8702 GPIO";
     dc->realize = ipod_classic_gpio_realize;
-    dc->reset = ipod_classic_gpio_reset;
+    device_class_set_legacy_reset(dc, ipod_classic_gpio_reset);
     dc->vmsd = &vmstate_ipod_classic_gpio;
     dc->user_creatable = false;
     device_class_set_props(dc, ipod_classic_gpio_props);

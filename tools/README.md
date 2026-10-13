@@ -44,16 +44,3 @@ The disk is an empty bootable qcow2 (thin-provisioned), laid out as the retailOS
 | Data partition | right after, type `0x0b` | Empty 1 GiB FAT32, with the bytes `FAT` at `+0x34` of the boot sector and of its backup copy (see below) |
 
 > The `FAT` marker is not part of the FAT format. Offset `+0x34` falls in the reserved bytes of the FAT32 boot sector ([layout](https://en.wikipedia.org/wiki/Design_of_the_FAT_file_system#BPB)), which ordinary FAT drivers ignore. The retailOS apparently still requires it and will not mount a volume without the marker.
-
-## `ipod_video/` — iPod video 5G
-
-Usage: `docs/ipod/how-to/run-an-ipod-video.md`.
-
-| Tool | Use |
-| -- | -- |
-| `dump-firmware.ps1` | Windows, read-only: dump the firmware partition of a connected iPod |
-| `mkdisk.sh` | Build an MBR + firmware + FAT32 disk image from a dump and the `.rockbox` directory |
-| `run.sh` | Boot the machine into Rockbox or Apple's retailOS from one `osos` image |
-| `extract-vc.py` | Extract the Broadcom VideoCore firmware and `.vll` modules from the firmware partition |
-| `findlit.py` | Find where ARM code loads a constant from its literal pool |
-| `navtest.sh`, `appletest.sh` | Drive the menus and print pixel counts. They assert nothing; read the numbers |

@@ -147,7 +147,7 @@ to introduce an overridden virtual function:
 
    #include "qdev.h"
 
-   void my_device_class_init(ObjectClass *klass, void *class_data)
+   void my_device_class_init(ObjectClass *klass, const void *class_data)
    {
        DeviceClass *dc = DEVICE_CLASS(klass);
        dc->reset = my_device_reset;
@@ -249,7 +249,7 @@ class, which someone might choose to change at some point.
        // do something
    }
 
-   static void my_class_init(ObjectClass *oc, void *data)
+   static void my_class_init(ObjectClass *oc, const void *data)
    {
        MyClass *mc = MY_CLASS(oc);
 
@@ -279,7 +279,7 @@ class, which someone might choose to change at some point.
        // do something else here
    }
 
-   static void derived_class_init(ObjectClass *oc, void *data)
+   static void derived_class_init(ObjectClass *oc, const void *data)
    {
        MyClass *mc = MY_CLASS(oc);
        DerivedClass *dc = DERIVED_CLASS(oc);
@@ -348,12 +348,14 @@ used. This does the same as OBJECT_DECLARE_SIMPLE_TYPE(), but without
 the 'struct MyDeviceClass' definition.
 
 To implement the type, the OBJECT_DEFINE macro family is available.
-In the simple case the OBJECT_DEFINE_TYPE macro is suitable:
+For the simplest case of a leaf class which doesn't need any of its
+own virtual functions (i.e. which was declared with OBJECT_DECLARE_SIMPLE_TYPE)
+the OBJECT_DEFINE_SIMPLE_TYPE macro is suitable:
 
 .. code-block:: c
    :caption: Defining a simple type
 
-   OBJECT_DEFINE_TYPE(MyDevice, my_device, MY_DEVICE, DEVICE)
+   OBJECT_DEFINE_SIMPLE_TYPE(MyDevice, my_device, MY_DEVICE, DEVICE)
 
 This is equivalent to the following:
 
@@ -361,7 +363,7 @@ This is equivalent to the following:
    :caption: Expansion from defining a simple type
 
    static void my_device_finalize(Object *obj);
-   static void my_device_class_init(ObjectClass *oc, void *data);
+   static void my_device_class_init(ObjectClass *oc, const void *data);
    static void my_device_init(Object *obj);
 
    static const TypeInfo my_device_info = {
@@ -370,7 +372,6 @@ This is equivalent to the following:
        .instance_size = sizeof(MyDevice),
        .instance_init = my_device_init,
        .instance_finalize = my_device_finalize,
-       .class_size = sizeof(MyDeviceClass),
        .class_init = my_device_class_init,
    };
 
@@ -385,12 +386,35 @@ This is sufficient to get the type registered with the type
 system, and the three standard methods now need to be implemented
 along with any other logic required for the type.
 
+If the class needs its own virtual methods, or has some other
+per-class state it needs to store in its own class struct,
+then you can use the OBJECT_DEFINE_TYPE macro. This does the
+same thing as OBJECT_DEFINE_SIMPLE_TYPE, but it also sets the
+class_size of the type to the size of the class struct.
+
+.. code-block:: c
+   :caption: Defining a type which needs a class struct
+
+   OBJECT_DEFINE_TYPE(MyDevice, my_device, MY_DEVICE, DEVICE)
+
 If the type needs to implement one or more interfaces, then the
-OBJECT_DEFINE_TYPE_WITH_INTERFACES() macro can be used instead.
-This accepts an array of interface type names.
+OBJECT_DEFINE_SIMPLE_TYPE_WITH_INTERFACES() and
+OBJECT_DEFINE_TYPE_WITH_INTERFACES() macros can be used instead.
+These accept an array of interface type names. The difference between
+them is that the former is for simple leaf classes that don't need
+a class struct, and the latter is for when you will be defining
+a class struct.
 
 .. code-block:: c
    :caption: Defining a simple type implementing interfaces
+
+   OBJECT_DEFINE_SIMPLE_TYPE_WITH_INTERFACES(MyDevice, my_device,
+                                             MY_DEVICE, DEVICE,
+                                             { TYPE_USER_CREATABLE },
+                                             { NULL })
+
+.. code-block:: c
+   :caption: Defining a type implementing interfaces
 
    OBJECT_DEFINE_TYPE_WITH_INTERFACES(MyDevice, my_device,
                                       MY_DEVICE, DEVICE,
@@ -411,14 +435,14 @@ OBJECT_DEFINE_ABSTRACT_TYPE() macro can be used instead:
 Device Life-cycle
 =================
 
-As class initialisation cannot fail devices have an two additional
+As class initialisation cannot fail, devices have two additional
 methods to handle the creation of dynamic devices. The ``realize``
 function is called with ``Error **`` pointer which should be set if
 the device cannot complete its setup. Otherwise on successful
 completion of the ``realize`` method the device object is added to the
 QOM tree and made visible to the guest.
 
-The reverse function is ``unrealize`` and should be were clean-up
+The reverse function is ``unrealize`` and should be where clean-up
 code lives to tidy up after the system is done with the device.
 
 All devices can be instantiated by C code, however only some can

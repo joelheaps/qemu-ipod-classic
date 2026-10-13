@@ -23,17 +23,18 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/ppc/ppc.h"
 #include "hw/ppc/ppc_e500.h"
 #include "qemu/timer.h"
-#include "sysemu/cpus.h"
+#include "exec/cpu-interrupt.h"
+#include "system/cpus.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/error-report.h"
-#include "sysemu/kvm.h"
-#include "sysemu/replay.h"
-#include "sysemu/runstate.h"
+#include "system/kvm.h"
+#include "system/replay.h"
+#include "system/runstate.h"
 #include "kvm_ppc.h"
 #include "migration/vmstate.h"
 #include "trace.h"
@@ -47,7 +48,7 @@ void ppc_set_irq(PowerPCCPU *cpu, int irq, int level)
     unsigned int old_pending;
 
     /* We may already have the BQL if coming from the reset path */
-    QEMU_IOTHREAD_LOCK_GUARD();
+    BQL_LOCK_GUARD();
 
     old_pending = env->pending_interrupts;
 
@@ -189,6 +190,7 @@ static void ppc970_set_irq(void *opaque, int pin, int level)
             if (level) {
                 trace_ppc_irq_cpu("stop");
                 cs->halted = 1;
+                cpu_exit(cs);
             } else {
                 trace_ppc_irq_cpu("restart");
                 cs->halted = 0;
@@ -267,7 +269,6 @@ static void power9_set_irq(void *opaque, int pin, int level)
         break;
     default:
         g_assert_not_reached();
-        return;
     }
 }
 
@@ -314,7 +315,7 @@ void store_40x_dbcr0(CPUPPCState *env, uint32_t val)
 {
     PowerPCCPU *cpu = env_archcpu(env);
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
 
     switch ((val >> 28) & 0x3) {
     case 0x0:
@@ -334,7 +335,7 @@ void store_40x_dbcr0(CPUPPCState *env, uint32_t val)
         break;
     }
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
 }
 
 /* PowerPC 40x internal IRQ controller */
@@ -386,6 +387,7 @@ static void ppc40x_set_irq(void *opaque, int pin, int level)
             if (level) {
                 trace_ppc_irq_cpu("stop");
                 cs->halted = 1;
+                cpu_exit(cs);
             } else {
                 trace_ppc_irq_cpu("restart");
                 cs->halted = 0;
@@ -513,6 +515,11 @@ uint64_t cpu_ppc_get_tb(ppc_tb_t *tb_env, uint64_t vmclk, int64_t tb_offset)
     return ns_to_tb(tb_env->tb_freq, vmclk) + tb_offset;
 }
 
+int64_t cpu_ppc_load_tb_offset(CPUPPCState *env)
+{
+    return env->tb_env->tb_offset;
+}
+
 uint64_t cpu_ppc_load_tbl (CPUPPCState *env)
 {
     ppc_tb_t *tb_env = env->tb_env;
@@ -633,6 +640,16 @@ void cpu_ppc_store_atbu (CPUPPCState *env, uint32_t value)
                      ((uint64_t)value << 32) | tb);
 }
 
+void cpu_ppc_increase_tb_by_offset(CPUPPCState *env, int64_t offset)
+{
+    env->tb_env->tb_offset += offset;
+}
+
+void cpu_ppc_decrease_tb_by_offset(CPUPPCState *env, int64_t offset)
+{
+    env->tb_env->tb_offset -= offset;
+}
+
 uint64_t cpu_ppc_load_vtb(CPUPPCState *env)
 {
     ppc_tb_t *tb_env = env->tb_env;
@@ -719,7 +736,9 @@ static inline int64_t __cpu_ppc_load_decr(CPUPPCState *env, int64_t now,
     int64_t decr;
 
     n = ns_to_tb(tb_env->decr_freq, now);
-    if (next > n && tb_env->flags & PPC_TIMER_BOOKE) {
+
+    /* BookE timers stop when reaching 0.  */
+    if (next < n && tb_env->flags & PPC_TIMER_BOOKE) {
         decr = 0;
     } else {
         decr = next - n;
@@ -1066,7 +1085,7 @@ const VMStateDescription vmstate_ppc_timebase = {
     .version_id = 1,
     .minimum_version_id = 1,
     .pre_save = timebase_pre_save,
-    .fields      = (VMStateField []) {
+    .fields = (const VMStateField []) {
         VMSTATE_UINT64(guest_timebase, PPCTimebase),
         VMSTATE_INT64(time_of_the_day_ns, PPCTimebase),
         VMSTATE_END_OF_LIST()
@@ -1112,16 +1131,21 @@ void cpu_ppc_tb_reset(CPUPPCState *env)
         timer_del(tb_env->hdecr_timer);
         ppc_set_irq(cpu, PPC_INTERRUPT_HDECR, 0);
         tb_env->hdecr_next = 0;
+        _cpu_ppc_store_hdecr(cpu, 0, 0, 0, 64);
     }
 
     /*
      * There is a bug in Linux 2.4 kernels:
      * if a decrementer exception is pending when it enables msr_ee at startup,
      * it's not ready to handle it...
+     *
+     * On machine reset, this is called before icount is reset, so for
+     * icount-mode, setting TB registers using now == qemu_clock_get_ns()
+     * results in them being garbage after icount is reset. Use an
+     * explicit now == 0 to get a consistent reset state.
      */
-    cpu_ppc_store_decr(env, -1);
-    cpu_ppc_store_hdecr(env, -1);
-    cpu_ppc_store_purr(env, 0x0000000000000000ULL);
+    _cpu_ppc_store_decr(cpu, 0, 0, -1, 64);
+    _cpu_ppc_store_purr(env, 0, 0);
 }
 
 void cpu_ppc_tb_free(CPUPPCState *env)

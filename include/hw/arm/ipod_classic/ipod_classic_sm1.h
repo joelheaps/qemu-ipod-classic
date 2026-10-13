@@ -22,7 +22,7 @@
 #define HW_ARM_IPOD_CLASSIC_SM1_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 #define TYPE_IPOD_CLASSIC_SM1 "s5l8702.sm1"

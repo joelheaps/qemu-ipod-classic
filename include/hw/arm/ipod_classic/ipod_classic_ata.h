@@ -34,8 +34,8 @@
 #define HW_ARM_IPOD_CLASSIC_ATA_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/ide/internal.h"
+#include "hw/core/sysbus.h"
+#include "hw/ide/ide-internal.h"
 #include "qom/object.h"
 
 #define TYPE_IPOD_CLASSIC_ATA "s5l8702.ata"
@@ -100,8 +100,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicATAState, IPOD_CLASSIC_ATA)
  * The order is what shapes the model. The buffer address is programmed AFTER
  * the ATA command, so start_dma cannot know where the data goes; all it can do
  * is latch the callback the IDE core hands it, and the write of the go bit is
- * what fires it. (The PP502x on the 5G needs the same split for the opposite
- * reason -- there the address comes first and the go bit still comes last.)
+ * what fires it.
  *
  * CFG bit 4 chooses the direction: set means the source buffer, i.e. a write
  * to the disk. VERIFIED from Rockbox, which sets it on the write path and

@@ -11,8 +11,8 @@
 #define HW_ARM_IPOD_CLASSIC_TIMER_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/ptimer.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/ptimer.h"
 #include "qom/object.h"
 
 #define TYPE_IPOD_CLASSIC_TIMER "s5l8702.timer"

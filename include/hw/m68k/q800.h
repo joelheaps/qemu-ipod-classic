@@ -23,15 +23,15 @@
 #ifndef HW_Q800_H
 #define HW_Q800_H
 
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "qom/object.h"
 #include "target/m68k/cpu-qom.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "hw/m68k/q800-glue.h"
 #include "hw/misc/mac_via.h"
 #include "hw/net/dp8393x.h"
 #include "hw/char/escc.h"
-#include "hw/or-irq.h"
+#include "hw/core/or-irq.h"
 #include "hw/scsi/esp.h"
 #include "hw/block/swim.h"
 #include "hw/nubus/mac-nubus-bridge.h"
@@ -55,6 +55,7 @@ struct Q800MachineState {
     MOS6522Q800VIA1State via1;
     MOS6522Q800VIA2State via2;
     dp8393xState dp8393x;
+    MemoryRegion dp8393x_prom;
     ESCCState escc;
     OrIRQState escc_orgate;
     SysBusESPState esp;

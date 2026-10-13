@@ -9,16 +9,16 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/register.h"
-#include "hw/registerfields.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/register.h"
+#include "hw/core/registerfields.h"
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/misc/xlnx-versal-cframe-reg.h"
 
 #ifndef XLNX_VERSAL_CFRAME_REG_ERR_DEBUG
@@ -542,7 +542,7 @@ static void cframe_reg_reset_enter(Object *obj, ResetType type)
     }
 }
 
-static void cframe_reg_reset_hold(Object *obj)
+static void cframe_reg_reset_hold(Object *obj, ResetType type)
 {
     XlnxVersalCFrameReg *s = XLNX_VERSAL_CFRAME_REG(obj);
 
@@ -693,11 +693,19 @@ static void cframe_reg_init(Object *obj)
     fifo32_create(&s->new_f_data, FRAME_NUM_WORDS);
 }
 
+static void cframe_reg_finalize(Object *obj)
+{
+    XlnxVersalCFrameReg *s = XLNX_VERSAL_CFRAME_REG(obj);
+
+    fifo32_destroy(&s->new_f_data);
+    g_tree_destroy(s->cframes);
+}
+
 static const VMStateDescription vmstate_cframe = {
     .name = "cframe",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(data, XlnxCFrame, FRAME_NUM_WORDS),
         VMSTATE_END_OF_LIST()
     }
@@ -707,7 +715,7 @@ static const VMStateDescription vmstate_cframe_reg = {
     .name = TYPE_XLNX_VERSAL_CFRAME_REG,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(wfifo, XlnxVersalCFrameReg, 4),
         VMSTATE_UINT32_ARRAY(regs, XlnxVersalCFrameReg, CFRAME_REG_R_MAX),
         VMSTATE_BOOL(rowon, XlnxVersalCFrameReg),
@@ -720,7 +728,7 @@ static const VMStateDescription vmstate_cframe_reg = {
     }
 };
 
-static Property cframe_regs_props[] = {
+static const Property cframe_regs_props[] = {
     DEFINE_PROP_LINK("cfu-fdro", XlnxVersalCFrameReg, cfg.cfu_fdro,
                      TYPE_XLNX_CFI_IF, XlnxCfiIf *),
     DEFINE_PROP_UINT32("blktype0-frames", XlnxVersalCFrameReg,
@@ -737,7 +745,6 @@ static Property cframe_regs_props[] = {
                        cfg.blktype_num_frames[5], 0),
     DEFINE_PROP_UINT32("blktype6-frames", XlnxVersalCFrameReg,
                        cfg.blktype_num_frames[6], 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void cframe_bcast_reg_init(Object *obj)
@@ -765,13 +772,13 @@ static const VMStateDescription vmstate_cframe_bcast_reg = {
     .name = TYPE_XLNX_VERSAL_CFRAME_BCAST_REG,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(wfifo, XlnxVersalCFrameBcastReg, 4),
         VMSTATE_END_OF_LIST(),
     }
 };
 
-static Property cframe_bcast_regs_props[] = {
+static const Property cframe_bcast_regs_props[] = {
     DEFINE_PROP_LINK("cframe0", XlnxVersalCFrameBcastReg, cfg.cframe[0],
                      TYPE_XLNX_CFI_IF, XlnxCfiIf *),
     DEFINE_PROP_LINK("cframe1", XlnxVersalCFrameBcastReg, cfg.cframe[1],
@@ -802,10 +809,9 @@ static Property cframe_bcast_regs_props[] = {
                      TYPE_XLNX_CFI_IF, XlnxCfiIf *),
     DEFINE_PROP_LINK("cframe14", XlnxVersalCFrameBcastReg, cfg.cframe[14],
                      TYPE_XLNX_CFI_IF, XlnxCfiIf *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void cframe_reg_class_init(ObjectClass *klass, void *data)
+static void cframe_reg_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -819,7 +825,7 @@ static void cframe_reg_class_init(ObjectClass *klass, void *data)
     xcic->cfi_transfer_packet = cframe_reg_cfi_transfer_packet;
 }
 
-static void cframe_bcast_reg_class_init(ObjectClass *klass, void *data)
+static void cframe_bcast_reg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -835,7 +841,8 @@ static const TypeInfo cframe_reg_info = {
     .instance_size = sizeof(XlnxVersalCFrameReg),
     .class_init    = cframe_reg_class_init,
     .instance_init = cframe_reg_init,
-    .interfaces = (InterfaceInfo[]) {
+    .instance_finalize = cframe_reg_finalize,
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_XLNX_CFI_IF },
         { }
     }

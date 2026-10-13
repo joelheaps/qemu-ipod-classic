@@ -26,9 +26,10 @@
 #ifndef HW_ARM_IPOD_CLASSIC_I2S_H
 #define HW_ARM_IPOD_CLASSIC_I2S_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 #include "qemu/timer.h"
+#include "qemu/audio.h"
 #include "hw/dma/pl080.h"
 
 #define TYPE_IPOD_CLASSIC_I2S "s5l8702.i2s"
@@ -75,6 +76,13 @@ struct IPodClassicI2SState {
 
     MemoryRegion iomem;
     qemu_irq irq;
+
+    /*
+     * Host audio backend for the AUDIOLIVE sink. Taken from the "audiodev"
+     * property, or resolved to the default backend, when the live output voice
+     * is first opened.
+     */
+    AudioBackend *audio_be;
 
     /* Register file, read back honestly. */
     uint32_t clkcon;

@@ -25,8 +25,9 @@
 #ifndef HW_VGA_INT_H
 #define HW_VGA_INT_H
 
-#include "exec/ioport.h"
-#include "exec/memory.h"
+#include "ui/console.h"
+#include "system/ioport.h"
+#include "system/memory.h"
 
 #include "hw/display/bochs-vbe.h"
 #include "hw/acpi/acpi_aml_interface.h"
@@ -55,6 +56,14 @@ union vga_retrace {
 struct VGACommonState;
 typedef uint8_t (* vga_retrace_fn)(struct VGACommonState *s);
 typedef void (* vga_update_retrace_info_fn)(struct VGACommonState *s);
+
+typedef struct VGADisplayParams {
+    uint32_t line_offset;
+    uint32_t start_addr;
+    uint32_t line_compare;
+    uint8_t  hpel;
+    bool     hpel_split;
+} VGADisplayParams;
 
 typedef struct VGACommonState {
     MemoryRegion *legacy_address_space;
@@ -90,10 +99,7 @@ typedef struct VGACommonState {
     uint8_t palette[768];
     int32_t bank_offset;
     int (*get_bpp)(struct VGACommonState *s);
-    void (*get_offsets)(struct VGACommonState *s,
-                        uint32_t *pline_offset,
-                        uint32_t *pstart_addr,
-                        uint32_t *pline_compare);
+    void (*get_params)(struct VGACommonState *s, VGADisplayParams *params);
     void (*get_resolution)(struct VGACommonState *s,
                         int *pwidth,
                         int *pheight);
@@ -108,16 +114,16 @@ typedef struct VGACommonState {
     /* display refresh support */
     QemuConsole *con;
     uint32_t font_offsets[2];
+    uint8_t *panning_buf;
     int graphic_mode;
     uint8_t shift_control;
     uint8_t double_scan;
-    uint32_t line_offset;
-    uint32_t line_compare;
-    uint32_t start_addr;
+    VGADisplayParams params;
     uint32_t plane_updated;
     uint32_t last_line_offset;
     uint8_t last_cw, last_ch;
-    uint32_t last_width, last_height; /* in chars or pixels */
+    uint32_t last_width, last_height; /* in pixels (graphics renderer) */
+    uint32_t last_text_width, last_text_height; /* in chars (text renderer) */
     uint32_t last_scr_width, last_scr_height; /* in pixels */
     uint32_t last_depth; /* in bits */
     bool last_byteswap;
@@ -125,6 +131,8 @@ typedef struct VGACommonState {
     uint8_t cursor_start, cursor_end;
     bool cursor_visible_phase;
     int64_t cursor_blink_time;
+    bool blink_visible_phase;
+    int64_t blink_time;
     uint32_t cursor_offset;
     const GraphicHwOps *hw_ops;
     bool full_update_text;

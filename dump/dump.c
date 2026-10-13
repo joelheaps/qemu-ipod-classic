@@ -15,11 +15,13 @@
 #include "qemu/cutils.h"
 #include "elf.h"
 #include "qemu/bswap.h"
+#include "exec/cpu-common.h"
 #include "exec/target_page.h"
 #include "monitor/monitor.h"
-#include "sysemu/dump.h"
-#include "sysemu/runstate.h"
-#include "sysemu/cpus.h"
+#include "system/dump.h"
+#include "system/runstate.h"
+#include "system/cpus.h"
+#include "system/physmem.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-dump.h"
 #include "qapi/qapi-events-dump.h"
@@ -28,8 +30,10 @@
 #include "qemu/main-loop.h"
 #include "hw/misc/vmcoreinfo.h"
 #include "migration/blocker.h"
+#include "migration/misc.h"
 #include "hw/core/cpu.h"
 #include "win_dump.h"
+#include "qemu/range.h"
 
 #include <zlib.h>
 #ifdef CONFIG_LZO
@@ -102,17 +106,20 @@ static int dump_cleanup(DumpState *s)
 
     guest_phys_blocks_free(&s->guest_phys_blocks);
     memory_mapping_list_free(&s->list);
-    close(s->fd);
+    if (s->fd != -1) {
+        close(s->fd);
+    }
+    s->fd = -1;
     g_free(s->guest_note);
     g_clear_pointer(&s->string_table_buf, g_array_unref);
     s->guest_note = NULL;
     if (s->resume) {
         if (s->detached) {
-            qemu_mutex_lock_iothread();
+            bql_lock();
         }
         vm_start();
         if (s->detached) {
-            qemu_mutex_unlock_iothread();
+            bql_unlock();
         }
     }
     migrate_del_blocker(&dump_migration_blocker);
@@ -574,8 +581,10 @@ static void get_offset_range(hwaddr phys_addr,
 
     QTAILQ_FOREACH(block, &s->guest_phys_blocks.head, next) {
         if (dump_has_filter(s)) {
-            if (block->target_start >= s->filter_area_begin + s->filter_area_length ||
-                block->target_end <= s->filter_area_begin) {
+            if (!ranges_overlap(block->target_start,
+                                block->target_end - block->target_start,
+                                s->filter_area_begin,
+                                s->filter_area_length)) {
                 /* This block is out of the range */
                 continue;
             }
@@ -734,8 +743,9 @@ int64_t dump_filtered_memblock_start(GuestPhysBlock *block,
 {
     if (filter_area_length) {
         /* return -1 if the block is not within filter area */
-        if (block->target_start >= filter_area_start + filter_area_length ||
-            block->target_end <= filter_area_start) {
+        if (!ranges_overlap(block->target_start,
+                            block->target_end - block->target_start,
+                            filter_area_start, filter_area_length)) {
             return -1;
         }
 
@@ -1283,6 +1293,7 @@ static bool get_next_page(GuestPhysBlock **blockptr, uint64_t *pfnptr,
     /* block == NULL means the start of the iteration */
     if (!block) {
         block = QTAILQ_FIRST(&s->guest_phys_blocks.head);
+        assert(block);
         *blockptr = block;
         addr = block->target_start;
         *pfnptr = dump_paddr_to_pfn(s, addr);
@@ -1290,7 +1301,6 @@ static bool get_next_page(GuestPhysBlock **blockptr, uint64_t *pfnptr,
         *pfnptr += 1;
         addr = dump_pfn_to_paddr(s, *pfnptr);
     }
-    assert(block != NULL);
 
     while (1) {
         if (addr >= block->target_start && addr < block->target_end) {
@@ -1704,8 +1714,8 @@ static DumpState dump_state_global = { .status = DUMP_STATUS_NONE };
 
 static void dump_state_prepare(DumpState *s)
 {
-    /* zero the struct, setting status to active */
-    *s = (DumpState) { .status = DUMP_STATUS_ACTIVE };
+    /* zero the struct, setting status to active and fd to -1 */
+    *s = (DumpState) { .fd = -1, .status = DUMP_STATUS_ACTIVE };
 }
 
 bool qemu_system_dump_in_progress(void)
@@ -1762,7 +1772,8 @@ static void vmcoreinfo_update_phys_base(DumpState *s)
         if (prefix && g_str_has_prefix(lines[i], prefix)) {
             if (qemu_strtou64(lines[i] + strlen(prefix), NULL, 16,
                               &phys_base) < 0) {
-                warn_report("Failed to read %s", prefix);
+                warn_report("failed to parse %s in VMCOREINFO: '%s'",
+                            prefix, lines[i] + strlen(prefix));
             } else {
                 s->dump_info.phys_base = phys_base;
             }
@@ -1884,7 +1895,7 @@ static void dump_init(DumpState *s, int fd, bool has_format,
             warn_report("guest note format is unsupported: %" PRIu16, guest_format);
         } else {
             s->guest_note = g_malloc(size + 1); /* +1 for adding \0 */
-            cpu_physical_memory_read(addr, s->guest_note, size);
+            physical_memory_read(addr, s->guest_note, size);
 
             get_note_sizes(s, s->guest_note, NULL, &name_size, &desc_size);
             s->guest_note_size = ELF_NOTE_SIZE(note_head_size, name_size,
@@ -2071,8 +2082,8 @@ void qmp_dump_guest_memory(bool paging, const char *protocol,
     bool detach_p = false;
     bool kdump_raw = false;
 
-    if (runstate_check(RUN_STATE_INMIGRATE)) {
-        error_setg(errp, "Dump not allowed during incoming migration.");
+    if (migration_guest_ram_loading()) {
+        error_setg(errp, "Dump not allowed during migration.");
         return;
     }
 

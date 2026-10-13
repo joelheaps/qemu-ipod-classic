@@ -7,11 +7,7 @@
  * COPYING file in the top-level directory.
  */
 
-#include <stdint.h>
-
 #include "qemu/osdep.h"
-#include "qemu/bswap.h"
-#include "qemu/typedefs.h"
 #include "qemu/error-report.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
@@ -141,6 +137,19 @@ bool cxl_event_insert(CXLDeviceState *cxlds, CXLEventLogType log_type,
     return cxl_event_count(log) == 1;
 }
 
+void cxl_discard_all_event_records(CXLDeviceState *cxlds)
+{
+    CXLEventLogType log_type;
+    CXLEventLog *log;
+
+    for (log_type = 0; log_type < CXL_EVENT_TYPE_MAX; log_type++) {
+        log = &cxlds->event_logs[log_type];
+        while (!cxl_event_empty(log)) {
+            cxl_event_delete_head(cxlds, log_type, log);
+        }
+    }
+}
+
 CXLRetCode cxl_event_get_records(CXLDeviceState *cxlds, CXLGetEventPayload *pl,
                                  uint8_t log_type, int max_recs,
                                  size_t *len)
@@ -206,7 +215,7 @@ CXLRetCode cxl_event_clear_records(CXLDeviceState *cxlds,
      * record that will not be cleared when Clear Event Records is executed,
      * the device shall return the Invalid Handle return code and shall not
      * clear any of the specified event records."
-     *   -- CXL 3.0 8.2.9.2.3
+     *   -- CXL r3.1 Section 8.2.9.2.3: Clear Event Records (0101h)
      */
     entry = cxl_event_get_head(log);
     for (nr = 0; entry && nr < pl->nr_recs; nr++) {
@@ -246,6 +255,45 @@ void cxl_event_irq_assert(CXLType3Dev *ct3d)
             msix_notify(pdev, log->irq_vec);
         } else if (msi_enabled(pdev)) {
             msi_notify(pdev, log->irq_vec);
+        }
+    }
+}
+
+void cxl_create_dc_event_records_for_extents(CXLType3Dev *ct3d,
+                                             CXLDCEventType type,
+                                             CXLDCExtentRaw extents[],
+                                             uint32_t ext_count)
+{
+    CXLEventDynamicCapacity event_rec = {};
+    int i;
+
+    cxl_assign_event_header(&event_rec.hdr,
+                            &dynamic_capacity_uuid,
+                            (1 << CXL_EVENT_TYPE_INFO),
+                            sizeof(event_rec),
+                            cxl_device_get_timestamp(&ct3d->cxl_dstate),
+                            0, 0, 0, 0, 0, 0, 0, 0);
+    event_rec.type = type;
+    event_rec.validity_flags = 1;
+    event_rec.host_id = 0;
+    event_rec.updated_region_id = 0;
+    event_rec.extents_avail = CXL_NUM_EXTENTS_SUPPORTED -
+                              ct3d->dc.total_extent_count;
+
+    for (i = 0; i < ext_count; i++) {
+        memcpy(&event_rec.dynamic_capacity_extent,
+               &extents[i],
+               sizeof(CXLDCExtentRaw));
+        event_rec.flags = 0;
+        if (i < ext_count - 1) {
+            /* Set "More" flag */
+            event_rec.flags |= BIT(0);
+        }
+
+        if (cxl_event_insert(&ct3d->cxl_dstate,
+                             CXL_EVENT_TYPE_DYNAMIC_CAP,
+                             (CXLEventRecordRaw *)&event_rec)) {
+            cxl_event_irq_assert(ct3d);
         }
     }
 }

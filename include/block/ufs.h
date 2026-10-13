@@ -3,11 +3,11 @@
 #ifndef BLOCK_UFS_H
 #define BLOCK_UFS_H
 
-#include "hw/registerfields.h"
+#include "hw/core/registerfields.h"
 
 typedef struct QEMU_PACKED UfsReg {
     uint32_t cap;
-    uint32_t rsvd0;
+    uint32_t mcqcap;
     uint32_t ver;
     uint32_t rsvd1;
     uint32_t hcpid;
@@ -46,6 +46,13 @@ typedef struct QEMU_PACKED UfsReg {
     uint32_t rsvd7[4];
     uint32_t rsvd8[16];
     uint32_t ccap;
+    uint32_t rsvd9[127];
+    uint32_t config;
+    uint32_t rsvd10[3];
+    uint32_t rsvd11[28];
+    uint32_t mcqconfig;
+    uint32_t esilba;
+    uint32_t esiuba;
 } UfsReg;
 
 REG32(CAP, offsetof(UfsReg, cap))
@@ -57,6 +64,15 @@ REG32(CAP, offsetof(UfsReg, cap))
     FIELD(CAP, OODDS, 25, 1)
     FIELD(CAP, UICDMETMS, 26, 1)
     FIELD(CAP, CS, 28, 1)
+    FIELD(CAP, LSDBS, 29, 1)
+    FIELD(CAP, MCQS, 30, 1)
+REG32(MCQCAP, offsetof(UfsReg, mcqcap))
+    FIELD(MCQCAP, MAXQ, 0, 8)
+    FIELD(MCQCAP, SP, 8, 1)
+    FIELD(MCQCAP, RRP, 9, 1)
+    FIELD(MCQCAP, EIS, 10, 1)
+    FIELD(MCQCAP, QCFGPTR, 16, 8)
+    FIELD(MCQCAP, MIAG, 24, 8)
 REG32(VER, offsetof(UfsReg, ver))
 REG32(HCPID, offsetof(UfsReg, hcpid))
 REG32(HCMID, offsetof(UfsReg, hcmid))
@@ -78,6 +94,7 @@ REG32(IS, offsetof(UfsReg, is))
     FIELD(IS, HCFES, 16, 1)
     FIELD(IS, SBFES, 17, 1)
     FIELD(IS, CEFES, 18, 1)
+    FIELD(IS, CQES, 20, 1)
 REG32(IE, offsetof(UfsReg, ie))
     FIELD(IE, UTRCE, 0, 1)
     FIELD(IE, UDEPRIE, 1, 1)
@@ -95,6 +112,7 @@ REG32(IE, offsetof(UfsReg, ie))
     FIELD(IE, HCFEE, 16, 1)
     FIELD(IE, SBFEE, 17, 1)
     FIELD(IE, CEFEE, 18, 1)
+    FIELD(IE, CQEE, 20, 1)
 REG32(HCS, offsetof(UfsReg, hcs))
     FIELD(HCS, DP, 0, 1)
     FIELD(HCS, UTRLRDY, 1, 1)
@@ -128,9 +146,14 @@ REG32(UCMDARG1, offsetof(UfsReg, ucmdarg1))
 REG32(UCMDARG2, offsetof(UfsReg, ucmdarg2))
 REG32(UCMDARG3, offsetof(UfsReg, ucmdarg3))
 REG32(CCAP, offsetof(UfsReg, ccap))
+REG32(CONFIG, offsetof(UfsReg, config))
+    FIELD(CONFIG, QT, 0, 1)
+REG32(MCQCONFIG, offsetof(UfsReg, mcqconfig))
+    FIELD(MCQCONFIG, MAC, 8, 8)
 
 #define UFS_INTR_MASK                                    \
-    ((1 << R_IS_CEFES_SHIFT) | (1 << R_IS_SBFES_SHIFT) | \
+    ((1 << R_IS_CQES_SHIFT) |                            \
+     (1 << R_IS_CEFES_SHIFT) | (1 << R_IS_SBFES_SHIFT) | \
      (1 << R_IS_HCFES_SHIFT) | (1 << R_IS_UTPES_SHIFT) | \
      (1 << R_IS_DFES_SHIFT) | (1 << R_IS_UCCS_SHIFT) |   \
      (1 << R_IS_UTMRCS_SHIFT) | (1 << R_IS_ULSS_SHIFT) | \
@@ -156,6 +179,84 @@ REG32(CCAP, offsetof(UfsReg, ccap))
 #define UFS_UPIU_HEADER_DATA_SEGMENT_LENGTH(dword2)                       \
     ((be32_to_cpu(dword2) >> UFS_UPIU_HEADER_DATA_SEGMENT_LENGTH_SHIFT) & \
      UFS_UPIU_HEADER_DATA_SEGMENT_LENGTH_MASK)
+
+typedef struct QEMU_PACKED UfsMcqReg {
+    uint32_t sqattr;
+    uint32_t sqlba;
+    uint32_t squba;
+    uint32_t sqdao;
+    uint32_t sqisao;
+    uint32_t sqcfg;
+    uint32_t rsvd0[2];
+    uint32_t cqattr;
+    uint32_t cqlba;
+    uint32_t cquba;
+    uint32_t cqdao;
+    uint32_t cqisao;
+    uint32_t cqcfg;
+    uint32_t rsvd1[2];
+} UfsMcqReg;
+
+REG32(SQATTR, offsetof(UfsMcqReg, sqattr))
+    FIELD(SQATTR, SIZE, 0, 16)
+    FIELD(SQATTR, CQID, 16, 8)
+    FIELD(SQATTR, SQPL, 28, 3)
+    FIELD(SQATTR, SQEN, 31, 1)
+REG32(SQLBA, offsetof(UfsMcqReg, sqlba))
+REG32(SQUBA, offsetof(UfsMcqReg, squba))
+REG32(SQDAO, offsetof(UfsMcqReg, sqdao))
+REG32(SQISAO, offsetof(UfsMcqReg, sqisao))
+REG32(SQCFG, offsetof(UfsMcqReg, sqcfg))
+REG32(CQATTR, offsetof(UfsMcqReg, cqattr))
+    FIELD(CQATTR, SIZE, 0, 16)
+    FIELD(CQATTR, CQEN, 31, 1)
+REG32(CQLBA, offsetof(UfsMcqReg, cqlba))
+REG32(CQUBA, offsetof(UfsMcqReg, cquba))
+REG32(CQDAO, offsetof(UfsMcqReg, cqdao))
+REG32(CQISAO, offsetof(UfsMcqReg, cqisao))
+REG32(CQCFG, offsetof(UfsMcqReg, cqcfg))
+
+typedef struct QEMU_PACKED UfsMcqSqReg {
+    uint32_t hp;
+    uint32_t tp;
+    uint32_t rtc;
+    uint32_t cti;
+    uint32_t rts;
+} UfsMcqSqReg;
+
+typedef struct QEMU_PACKED UfsMcqCqReg {
+    uint32_t hp;
+    uint32_t tp;
+} UfsMcqCqReg;
+
+typedef struct QEMU_PACKED UfsMcqSqIntReg {
+    uint32_t is;
+    uint32_t ie;
+} UfsMcqSqIntReg;
+
+typedef struct QEMU_PACKED UfsMcqCqIntReg {
+    uint32_t is;
+    uint32_t ie;
+    uint32_t iacr;
+} UfsMcqCqIntReg;
+
+REG32(CQIS, offsetof(UfsMcqCqIntReg, is))
+    FIELD(CQIS, TEPS, 0, 1)
+
+/*
+ * Provide MCQ Operation & Runtime Registers as a contiguous addressed
+ * registers for the simplicity.
+ * DAO(Doorbell Address Offset) and  ISAO(Interrupt Status Register Address
+ * Offset) registers should be properly configured with the following
+ * structure.
+ */
+#define UFS_MCQ_OPR_START   0x1000
+typedef struct QEMU_PACKED UfsMcqOpReg {
+    UfsMcqSqReg sq;
+    UfsMcqSqIntReg sq_int;
+    UfsMcqCqReg cq;
+    UfsMcqCqIntReg cq_int;
+} UfsMcqOpReg;
 
 typedef struct QEMU_PACKED DeviceDescriptor {
     uint8_t length;
@@ -193,7 +294,8 @@ typedef struct QEMU_PACKED DeviceDescriptor {
     uint32_t psa_max_data_size;
     uint8_t psa_state_timeout;
     uint8_t product_revision_level;
-    uint8_t reserved[36];
+    uint8_t reserved[34];
+    uint16_t extended_wb_support;
     uint32_t extended_ufs_features_support;
     uint8_t write_booster_buffer_preserve_user_space_en;
     uint8_t write_booster_buffer_type;
@@ -241,6 +343,8 @@ typedef struct QEMU_PACKED GeometryDescriptor {
     uint8_t write_booster_buffer_cap_adj_fac;
     uint8_t supported_write_booster_buffer_user_space_reduction_types;
     uint8_t supported_write_booster_buffer_types;
+    uint8_t reserved3[17];
+    uint8_t cap_adj_fac_representation;
 } GeometryDescriptor;
 
 #define UFS_GEOMETRY_CAPACITY_SHIFT 9
@@ -336,6 +440,8 @@ typedef struct QEMU_PACKED Flags {
     uint8_t wb_buffer_flush_en;
     uint8_t wb_buffer_flush_during_hibernate;
     uint8_t reserved4[2];
+    uint8_t unpin_en;
+    uint8_t reserved5[235];
 } Flags;
 
 typedef struct Attributes {
@@ -356,11 +462,13 @@ typedef struct Attributes {
     uint16_t exception_event_status;
     uint32_t seconds_passed;
     uint16_t context_conf;
+    uint8_t obsolete;
+    uint8_t reserved2[2];
     uint8_t device_ffu_status;
     uint8_t psa_state;
     uint32_t psa_data_size;
     uint8_t ref_clk_gating_wait_time;
-    uint8_t device_case_rough_temperaure;
+    uint8_t device_case_rough_temperature;
     uint8_t device_too_high_temp_boundary;
     uint8_t device_too_low_temp_boundary;
     uint8_t throttling_status;
@@ -368,10 +476,34 @@ typedef struct Attributes {
     uint8_t available_wb_buffer_size;
     uint8_t wb_buffer_life_time_est;
     uint32_t current_wb_buffer_size;
+    uint8_t reserved3[10];
+    uint8_t ext_iid_en;
+    uint16_t host_hint_cache_size;
     uint8_t refresh_status;
     uint8_t refresh_freq;
     uint8_t refresh_unit;
     uint8_t refresh_method;
+    uint64_t timestamp;
+    uint8_t reserved4[3];
+    uint64_t device_level_exception_id;
+    uint8_t defrag_op;
+    uint32_t hid_avail_size;
+    uint32_t hid_size;
+    uint8_t hid_prog_ratio;
+    uint8_t hid_state;
+    uint8_t reserved5[2];
+    uint8_t wb_buffer_resize_hint;
+    uint8_t wb_buffer_resize_en;
+    uint8_t wb_buffer_resize_status;
+    uint8_t wb_buffer_partial_flush_mode;
+    uint32_t max_fifo_wb_partial_flush_mode;
+    uint32_t curr_fifo_wb_partial_flush_mode;
+    uint32_t pinned_wb_buffer_curr_alloc_units;
+    uint8_t pinned_wb_buffer_avail_percent;
+    uint32_t pinned_wb_cumm_written_size;
+    uint32_t pinned_wb_num_alloc_units;
+    uint32_t non_pinned_wb_min_num_alloc_units;
+    uint8_t reserved6[184];
 } Attributes;
 
 #define UFS_TRANSACTION_SPECIFIC_FIELD_SIZE 20
@@ -497,6 +629,18 @@ enum {
 #define UFS_MASK_UIC_COMMAND_RESULT 0xFF
 
 /*
+ * MIPI UniPro PHY Adapter (PA) layer attribute IDs accessed via
+ * DME_GET / DME_SET / DME_PEER_{GET,SET} UIC commands.
+ */
+#define UFS_ATTR_PA_AVAILTXDATALANES 0x1520
+#define UFS_ATTR_PA_AVAILRXDATALANES 0x1540
+#define UFS_ATTR_PA_CONNECTEDTXDATALANES 0x1561
+#define UFS_ATTR_PA_PWRMODE 0x1571
+#define UFS_ATTR_PA_CONNECTEDRXDATALANES 0x1581
+#define UFS_ATTR_PA_MAXRXPWMGEAR 0x1586
+#define UFS_ATTR_PA_MAXRXHSGEAR 0x1587
+
+/*
  * Request Descriptor Definitions
  */
 
@@ -544,7 +688,7 @@ enum UtpOcsCodes {
 };
 
 enum {
-    UFS_MASK_OCS = 0x0F,
+    UFS_MASK_OCS = 0xFF,
 };
 
 /*
@@ -663,6 +807,12 @@ typedef struct QEMU_PACKED UtpTaskReqDesc {
 #define UFS_WB_EXCEED_LIFETIME 0x0B
 
 /*
+ * The range of valid value of Active ICC attritbute
+ * is from 0x00 to 0x0F.
+ */
+#define UFS_QUERY_ATTR_ACTIVE_ICC_MAXVALUE 0x0F
+
+/*
  * In UFS Spec, the Extra Header Segment (EHS) starts from byte 32 in UPIU
  * request/response packet
  */
@@ -749,6 +899,7 @@ enum flag_idn {
     UFS_QUERY_FLAG_IDN_WB_BUFF_FLUSH_DURING_HIBERN8 = 0x10,
     UFS_QUERY_FLAG_IDN_HPB_RESET = 0x11,
     UFS_QUERY_FLAG_IDN_HPB_EN = 0x12,
+    UFS_QUERY_FLAG_IDN_UNPIN_EN = 0x13,
     UFS_QUERY_FLAG_IDN_COUNT,
 };
 
@@ -786,10 +937,47 @@ enum attr_idn {
     UFS_QUERY_ATTR_IDN_AVAIL_WB_BUFF_SIZE = 0x1D,
     UFS_QUERY_ATTR_IDN_WB_BUFF_LIFE_TIME_EST = 0x1E,
     UFS_QUERY_ATTR_IDN_CURR_WB_BUFF_SIZE = 0x1F,
+    UFS_QUERY_ATTR_IDN_EXT_IID_EN = 0x2A,
+    UFS_QUERY_ATTR_IDN_HOST_HINT_CACHE_SIZE = 0x2B,
     UFS_QUERY_ATTR_IDN_REFRESH_STATUS = 0x2C,
     UFS_QUERY_ATTR_IDN_REFRESH_FREQ = 0x2D,
     UFS_QUERY_ATTR_IDN_REFRESH_UNIT = 0x2E,
+    UFS_QUERY_ATTR_IDN_TIMESTAMP = 0x30,
+    UFS_QUERY_ATTR_IDN_DEVICE_LEVEL_EXCEPTION_ID = 0x34,
+    UFS_QUERY_ATTR_IDN_DEFRAG_OP = 0x35,
+    UFS_QUERY_ATTR_IDN_HID_AVAIL_SIZE = 0x36,
+    UFS_QUERY_ATTR_IDN_HID_SIZE = 0x37,
+    UFS_QUERY_ATTR_IDN_HID_PROG_RATIO = 0x38,
+    UFS_QUERY_ATTR_IDN_HID_STATE = 0x39,
+    UFS_QUERY_ATTR_IDN_WB_BUFF_RESIZE_HINT = 0x3C,
+    UFS_QUERY_ATTR_IDN_WB_BUFF_RESIZE_EN = 0x3D,
+    UFS_QUERY_ATTR_IDN_WB_BUFF_RESIZE_STATUS = 0x3E,
+    UFS_QUERY_ATTR_IDN_WB_BUFF_PARTIAL_FLUSH_MODE = 0x3F,
+    UFS_QUERY_ATTR_IDN_MAX_FIFO_WB_PARTIAL_FLUSH_MODE = 0x40,
+    UFS_QUERY_ATTR_IDN_CURR_FIFO_WB_PARTIAL_FLUSH_MODE = 0x41,
+    UFS_QUERY_ATTR_IDN_PINNED_WB_BUFF_CURR_ALLOC_UNITS = 0x42,
+    UFS_QUERY_ATTR_IDN_PINNED_WB_BUFF_AVAIL_PERCENT = 0x43,
+    UFS_QUERY_ATTR_IDN_PINNED_WB_CUMM_WRITTEN_SIZE = 0x44,
+    UFS_QUERY_ATTR_IDN_PINNED_WB_NUM_ALLOC_UNITS = 0x45,
+    UFS_QUERY_ATTR_IDN_NON_PINNED_WB_MIN_NUM_ALLOC_UNITS = 0x46,
     UFS_QUERY_ATTR_IDN_COUNT,
+};
+
+/* HID (Host Initiated Defragmentation) operation values for bDefragOperation */
+enum ufs_hid_op {
+    UFS_HID_OP_DISABLE = 0x00,
+    UFS_HID_OP_ANALYSIS = 0x01,
+    UFS_HID_OP_DEFRAG = 0x02,
+};
+
+/* HID state values for bHIDState */
+enum ufs_hid_state {
+    UFS_HID_STATE_IDLE = 0x00,
+    UFS_HID_STATE_ANALYSIS_IN_PROGRESS = 0x01,
+    UFS_HID_STATE_DEFRAG_REQUIRED = 0x02,
+    UFS_HID_STATE_DEFRAG_IN_PROGRESS = 0x03,
+    UFS_HID_STATE_DEFRAG_COMPLETED = 0x04,
+    UFS_HID_STATE_DEFRAG_NOT_REQUIRED = 0x05,
 };
 
 /* Descriptor idn for Query requests */
@@ -898,6 +1086,7 @@ enum device_desc_param {
     UFS_DEVICE_DESC_PARAM_PRDCT_REV = 0x2A,
     UFS_DEVICE_DESC_PARAM_HPB_VER = 0x40,
     UFS_DEVICE_DESC_PARAM_HPB_CONTROL = 0x42,
+    UFS_DEVICE_DESC_PARAM_EXT_WB_SUP = 0x4D,
     UFS_DEVICE_DESC_PARAM_EXT_UFS_FEATURE_SUP = 0x4F,
     UFS_DEVICE_DESC_PARAM_WB_PRESRV_USRSPC_EN = 0x53,
     UFS_DEVICE_DESC_PARAM_WB_TYPE = 0x54,
@@ -966,6 +1155,25 @@ enum health_desc_param {
     UFS_HEALTH_DESC_PARAM_LIFE_TIME_EST_B = 0x4,
 };
 
+/* Possible values for bUFSFeaturesSupport */
+enum {
+    UFS_DEV_HIGH_TEMP_NOTIF = BIT(4),
+    UFS_DEV_LOW_TEMP_NOTIF = BIT(5),
+};
+
+/* Possible values for dExtendedWriteBoosterSupport */
+enum {
+    WB_RESIZE = BIT(0),
+    WB_FIFO = BIT(1),
+    WB_PINNED = BIT(2),
+};
+
+/* Possible values for dExtendedUFSFeaturesSupport */
+enum {
+    UFS_DEV_WB_SUPPORT = BIT(8),
+    UFS_DEV_HID_SUPPORT = BIT(13),
+};
+
 /* WriteBooster buffer mode */
 enum {
     UFS_WB_BUF_MODE_LU_DEDICATED = 0x0,
@@ -982,6 +1190,15 @@ enum ufs_lu_wp_type {
     UFS_LU_NO_WP = 0x00,
     UFS_LU_POWER_ON_WP = 0x01,
     UFS_LU_PERM_WP = 0x02,
+};
+
+/* Exception event mask values */
+enum {
+    MASK_EE_TOO_HIGH_TEMP = BIT(3),
+    MASK_EE_TOO_LOW_TEMP = BIT(4),
+    MASK_EE_WB_FLUSH_NEEDED = BIT(5),
+    MASK_EE_WB_RESIZE_HINT = BIT(8),
+    MASK_EE_PINNED_WB_FULL = BIT(10),
 };
 
 /* UTP QUERY Transaction Specific Fields OpCode */
@@ -1036,6 +1253,45 @@ enum ufs_dev_pwr_mode {
     UFS_DEEPSLEEP_PWR_MODE = 4,
 };
 
+/* UFS Write Booster */
+enum ufs_wb_flush_status {
+    UFS_WB_FLUSH_IDLE = 0,
+    UFS_WB_FLUSH_IN_PROGRESS = 1,
+    UFS_WB_FLUSH_SUSPENDED = 2,
+    UFS_WB_FLUSH_COMPLETED = 3,
+    UFS_WB_FLUSH_FAILED = 4,
+    UFS_WB_FLUSH_STATUS_MAX,
+};
+
+enum ufs_wb_flush_mode {
+    UFS_WB_FLUSH_NONE = 0,
+    UFS_WB_FLUSH_FIFO = 1,
+    UFS_WB_FLUSH_PINNED = 2,
+    UFS_WB_FLUSH_MODE_MAX,
+};
+
+enum ufs_wb_resize_hint {
+    UFS_WB_HINT_KEEP = 0,
+    UFS_WB_HINT_DECREASE = 1,
+    UFS_WB_HINT_INCREASE = 2,
+    UFS_WB_RESIZE_HINT_MAX,
+};
+
+enum ufs_wb_resize_op {
+    UFS_WB_IDLE = 0,
+    UFS_WB_DECREASE = 1,
+    UFS_WB_INCREASE = 2,
+    UFS_WB_RESIZE_OP_MAX,
+};
+
+enum ufs_wb_resize_status {
+    UFS_WB_RESIZE_IDLE = 0,
+    UFS_WB_RESIZE_IN_PROGRESS = 1,
+    UFS_WB_RESIZE_COMPLETED = 2,
+    UFS_WB_RESIZE_FAILED = 3,
+    UFS_WB_RESIZE_STATUS_MAX,
+};
+
 /*
  * struct UtpCmdRsp - Response UPIU structure
  * @residual_transfer_count: Residual transfer count DW-3
@@ -1064,18 +1320,44 @@ typedef struct QEMU_PACKED UtpUpiuRsp {
     };
 } UtpUpiuRsp;
 
+/*
+ * MCQ Completion Queue Entry
+ */
+typedef UtpTransferReqDesc UfsSqEntry;
+typedef struct QEMU_PACKED UfsCqEntry {
+    uint64_t utp_addr;
+    uint16_t resp_len;
+    uint16_t resp_off;
+    uint16_t prdt_len;
+    uint16_t prdt_off;
+    uint8_t status;
+    uint8_t error;
+    uint16_t rsvd1;
+    uint8_t task_tag;
+    uint8_t lun;
+    uint8_t iid_ext_iid;
+    uint8_t rsvd2;
+    uint32_t rsvd3[2];
+} UfsCqEntry;
+
 static inline void _ufs_check_size(void)
 {
-    QEMU_BUILD_BUG_ON(sizeof(UfsReg) != 0x104);
+    QEMU_BUILD_BUG_ON(sizeof(UfsReg) != 0x38C);
+    QEMU_BUILD_BUG_ON(sizeof(UfsMcqReg) != 64);
+    QEMU_BUILD_BUG_ON(sizeof(UfsMcqSqReg) != 20);
+    QEMU_BUILD_BUG_ON(sizeof(UfsMcqCqReg) != 8);
+    QEMU_BUILD_BUG_ON(sizeof(UfsMcqSqIntReg) != 8);
+    QEMU_BUILD_BUG_ON(sizeof(UfsMcqCqIntReg) != 12);
+    QEMU_BUILD_BUG_ON(sizeof(UfsMcqOpReg) != 48);
     QEMU_BUILD_BUG_ON(sizeof(DeviceDescriptor) != 89);
-    QEMU_BUILD_BUG_ON(sizeof(GeometryDescriptor) != 87);
+    QEMU_BUILD_BUG_ON(sizeof(GeometryDescriptor) != 105);
     QEMU_BUILD_BUG_ON(sizeof(UnitDescriptor) != 45);
     QEMU_BUILD_BUG_ON(sizeof(RpmbUnitDescriptor) != 35);
     QEMU_BUILD_BUG_ON(sizeof(PowerParametersDescriptor) != 98);
     QEMU_BUILD_BUG_ON(sizeof(InterconnectDescriptor) != 6);
     QEMU_BUILD_BUG_ON(sizeof(StringDescriptor) != 254);
     QEMU_BUILD_BUG_ON(sizeof(DeviceHealthDescriptor) != 45);
-    QEMU_BUILD_BUG_ON(sizeof(Flags) != 0x13);
+    QEMU_BUILD_BUG_ON(sizeof(Flags) != 0xFF);
     QEMU_BUILD_BUG_ON(sizeof(UtpUpiuHeader) != 12);
     QEMU_BUILD_BUG_ON(sizeof(UtpUpiuQuery) != 276);
     QEMU_BUILD_BUG_ON(sizeof(UtpUpiuCmd) != 20);
@@ -1086,5 +1368,7 @@ static inline void _ufs_check_size(void)
     QEMU_BUILD_BUG_ON(sizeof(UtpTaskReqDesc) != 80);
     QEMU_BUILD_BUG_ON(sizeof(UtpCmdRsp) != 40);
     QEMU_BUILD_BUG_ON(sizeof(UtpUpiuRsp) != 288);
+    QEMU_BUILD_BUG_ON(sizeof(UfsSqEntry) != 32);
+    QEMU_BUILD_BUG_ON(sizeof(UfsCqEntry) != 32);
 }
 #endif

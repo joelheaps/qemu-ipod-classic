@@ -197,12 +197,27 @@ virgl_cmd_submit_3d(VuGpu *g,
                     struct virtio_gpu_ctrl_command *cmd)
 {
     struct virtio_gpu_cmd_submit cs;
+    size_t iov_len;
     void *buf;
     size_t s;
 
     VUGPU_FILL_CMD(cs);
 
-    buf = g_malloc(cs.size);
+    iov_len = iov_size(cmd->elem.out_sg, cmd->elem.out_num);
+    if (cs.size == 0 || iov_len < sizeof(cs) ||
+        cs.size > iov_len - sizeof(cs) ||
+        cs.size > VIRTIO_GPU_MAX_CMD_SUBMIT_SIZE) {
+        g_critical("%s: size out of range (%u/%zu)",
+                   __func__, cs.size, iov_len);
+        cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER;
+        return;
+    }
+
+    buf = g_try_malloc(cs.size);
+    if (!buf) {
+        cmd->error = VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
+        return;
+    }
     s = iov_to_buf(cmd->elem.out_sg, cmd->elem.out_num,
                    sizeof(cs), buf, cs.size);
     if (s != cs.size) {
@@ -327,7 +342,7 @@ virgl_get_resource_info_modifiers(uint32_t resource_id,
 #ifdef VIRGL_RENDERER_RESOURCE_INFO_EXT_VERSION
     struct virgl_renderer_resource_info_ext info_ext;
     ret = virgl_renderer_resource_get_info_ext(resource_id, &info_ext);
-    if (ret < 0) {
+    if (ret) {
         return ret;
     }
 
@@ -335,7 +350,7 @@ virgl_get_resource_info_modifiers(uint32_t resource_id,
     *modifiers = info_ext.modifiers;
 #else
     ret = virgl_renderer_resource_get_info(resource_id, info);
-    if (ret < 0) {
+    if (ret) {
         return ret;
     }
 
@@ -372,7 +387,7 @@ virgl_cmd_set_scanout(VuGpu *g,
         uint64_t modifiers = 0;
         ret = virgl_get_resource_info_modifiers(ss.resource_id, &info,
                                                 &modifiers);
-        if (ret == -1) {
+        if (ret) {
             g_critical("%s: illegal resource specified %d\n",
                        __func__, ss.resource_id);
             cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;

@@ -16,6 +16,7 @@
 #define BLOCK_COPY_H
 
 #include "block/block-common.h"
+#include "block/graph-lock.h"
 #include "qemu/progress_meter.h"
 
 /* All APIs are thread-safe */
@@ -25,7 +26,10 @@ typedef struct BlockCopyState BlockCopyState;
 typedef struct BlockCopyCallState BlockCopyCallState;
 
 BlockCopyState *block_copy_state_new(BdrvChild *source, BdrvChild *target,
+                                     BlockDriverState *copy_bitmap_bs,
                                      const BdrvDirtyBitmap *bitmap,
+                                     bool discard_source,
+                                     uint64_t min_cluster_size,
                                      Error **errp);
 
 /* Function should be called prior any actual copy request */

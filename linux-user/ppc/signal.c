@@ -21,6 +21,7 @@
 #include "user-internals.h"
 #include "signal-common.h"
 #include "linux-user/trace.h"
+#include "user/tswap-target.h"
 #include "vdso-asmoffset.h"
 
 /* See arch/powerpc/include/asm/ucontext.h.  Only used for 32-bit PPC;
@@ -207,6 +208,18 @@ struct target_rt_sigframe {
 QEMU_BUILD_BUG_ON(offsetof(struct target_rt_sigframe, uc.tuc_mcontext)
                   != offsetof_rt_sigframe_mcontext);
 
+#endif
+
+#ifdef TARGET_PPC64
+#define RT_SIGFRAME_ADJUST 0
+#else
+/*
+ * For 32-bit rt sigframes we have an extra 16 bytes of gap
+ * on top of __SIGNAL_FRAMESIZE; this is to get the siginfo
+ * and ucontext in the same positions as in older kernels.
+ * See Linux's arch/powerpc/kernel/signal_32.c.
+ */
+#define RT_SIGFRAME_ADJUST 16
 #endif
 
 #if defined(TARGET_PPC64)
@@ -407,7 +420,7 @@ static void restore_user_regs(CPUPPCState *env,
             __get_user(*fpr, &frame->mc_fregs[i]);
         }
         __get_user(fpscr, &frame->mc_fregs[32]);
-        env->fpscr = (uint32_t) fpscr;
+        ppc_store_fpscr(env, (uint32_t) fpscr);
     }
 
 #if !defined(TARGET_PPC64)
@@ -486,14 +499,14 @@ void setup_rt_frame(int sig, struct target_sigaction *ka,
     int i, err = 0;
 #if defined(TARGET_PPC64)
     struct target_sigcontext *sc = 0;
-    struct image_info *image = ((TaskState *)thread_cpu->opaque)->info;
+    struct image_info *image = get_task_state(thread_cpu)->info;
 #endif
 
     rt_sf_addr = get_sigframe(ka, env, sizeof(*rt_sf));
     if (!lock_user_struct(VERIFY_WRITE, rt_sf, rt_sf_addr, 1))
         goto sigsegv;
 
-    tswap_siginfo(&rt_sf->info, info);
+    rt_sf->info = *info;
 
     __put_user(0, &rt_sf->uc.tuc_flags);
     __put_user(0, &rt_sf->uc.tuc_link);
@@ -502,7 +515,7 @@ void setup_rt_frame(int sig, struct target_sigaction *ka,
     __put_user(h2g (&rt_sf->uc.tuc_mcontext),
                &rt_sf->uc.tuc_regs);
 #endif
-    for(i = 0; i < TARGET_NSIG_WORDS; i++) {
+    for (i = 0; i < TARGET_NSIG_WORDS; i++) {
         __put_user(set->sig[i], &rt_sf->uc.tuc_sigmask.sig[i]);
     }
 
@@ -524,7 +537,7 @@ void setup_rt_frame(int sig, struct target_sigaction *ka,
     env->fpscr = 0;
 
     /* Create a stack frame for the caller of the handler.  */
-    newsp = rt_sf_addr - (SIGNAL_FRAMESIZE + 16);
+    newsp = rt_sf_addr - (SIGNAL_FRAMESIZE + RT_SIGFRAME_ADJUST);
     err |= put_user(env->gpr[1], newsp, target_ulong);
 
     if (err)
@@ -627,7 +640,7 @@ static int do_setcontext(struct target_ucontext *ucp, CPUPPCState *env, int sig)
     if (!lock_user_struct(VERIFY_READ, mcp, mcp_addr, 1))
         return 1;
 
-    target_to_host_sigset_internal(&blocked, &set);
+    target_to_host_sigset(&blocked, &set);
     set_sigmask(&blocked);
     restore_user_regs(env, mcp, sig);
 
@@ -640,7 +653,7 @@ long do_rt_sigreturn(CPUPPCState *env)
     struct target_rt_sigframe *rt_sf = NULL;
     target_ulong rt_sf_addr;
 
-    rt_sf_addr = env->gpr[1] + SIGNAL_FRAMESIZE + 16;
+    rt_sf_addr = env->gpr[1] + SIGNAL_FRAMESIZE + RT_SIGFRAME_ADJUST;
     if (!lock_user_struct(VERIFY_READ, rt_sf, rt_sf_addr, 1))
         goto sigsegv;
 
@@ -673,7 +686,7 @@ abi_long do_swapcontext(CPUArchState *env, abi_ulong uold_ctx,
     }
 
     if (uold_ctx) {
-        TaskState *ts = (TaskState *)thread_cpu->opaque;
+        TaskState *ts = get_task_state(thread_cpu);
 
         if (!lock_user_struct(VERIFY_WRITE, uctx, uold_ctx, 1)) {
             return -TARGET_EFAULT;

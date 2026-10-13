@@ -235,7 +235,6 @@ The machine supports QEMU internal snapshots on a qcow2 overlay: `savevm` captur
 | PMU RTC | `rtc_guest_ms` is saved and re-based in `post_load`, so the guest clock continues on virtual time (default `-rtc clock=host` only) |
 | IRQ lines | Not migrated; every device re-derives its line in `post_load` (PL192 `pl192_update`, timer/I2C/LCD/SM1/ATA `update_irq`, the wheel, the UART from `UINTP`) |
 | PL192 daisy chain | `daisy_callback` is rebuilt from the fixed `daisy_source` (vic0 ← vic1) |
-| iPod-Video | No snapshot wiring |
 
 ## Environment variables
 
