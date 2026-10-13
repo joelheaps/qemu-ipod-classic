@@ -13,7 +13,7 @@ Run with `uv run --script`; each file declares its own dependencies.
 | `tests/test_emcore_s5l8702.py` | Offline tests for the client's response decoders; no device needed |
 | `cli.py` | Flag handling shared by the `scripts/ipod/` tasks (`README.md`): `--name=value` or `name=value`, environment defaults, paths from the repo root |
 | `make_disk.py` | The logic of the `ipod:make-disk` task (`README.md`) |
-| `tests/test_fwtool.py`, `tests/test_make_disk.py` | Tests for `fwtool.py` and `make_disk.py`; the docker end-to-end ones skip without docker. Run: `mise run check:tests` |
+| `tests/test_fwtool.py`, `tests/test_make_disk.py` | Tests for `fwtool.py` and `make_disk.py`; disk integration tests skip without mkfs.fat and the selected qemu-img. Run: `mise run check:tests` |
 
 ### `fwtool.py`
 

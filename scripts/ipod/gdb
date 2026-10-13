@@ -1,4 +1,5 @@
 #!/bin/sh
-#MISE description="Run a gdb command file against the live window's QEMU (the file must begin with: set architecture armv5te / set arm abi AAPCS / target remote :1405). Extra args -> gdb; T=secs (default 30)"
+#MISE description="Run a GDB command file against the guest (default :1405); T=seconds"
 set -eu
-exec docker exec ipod-live timeout "${T:-30}" gdb-multiarch -q -batch -x "$@"
+if command -v gdb-multiarch >/dev/null; then debugger=gdb-multiarch; else debugger=gdb; fi
+exec timeout "${T:-30}" "$debugger" -q -batch -x "$@"

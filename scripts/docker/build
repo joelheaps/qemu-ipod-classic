@@ -1,0 +1,5 @@
+#!/bin/sh
+#MISE description="Build QEMU inside Ubuntu using the shared mise build task"
+#MISE depends=["docker:build-build-image"]
+set -eu
+exec python3 "$(dirname "$0")/task.py" qemu-ipod-build build "$@"

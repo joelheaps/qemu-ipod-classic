@@ -3,10 +3,11 @@
 Layout (what the retailOS expects): an MBR in 4096-byte units, the firmware partition (a
 Firmware-XX payload) at block 8 (type 0x00), then an empty 1 GiB FAT32 (type 0x0b). The firmware
 partition carries the fonts the UI needs; without it a boot reset-loops. Flags:
-README.md. Assumes it runs where mkfs.fat and build/qemu-img are available (the
-scripts/ipod/make-disk wrapper runs it in the dev container).
+README.md. Assumes it runs where mkfs.fat and BUILD_DIR/qemu-img are available (the
+docker:ipod:make-disk wrapper runs the same task in the dev container).
 """
 
+import os
 import struct
 import subprocess
 import sys
@@ -27,9 +28,10 @@ USAGE = (
 
 
 def build_image(payload: bytes, out: Path, track: Path | None = None) -> None:
-    """Write the disk for PAYLOAD to OUT as qcow2 (needs mkfs.fat and build/qemu-img).
+    """Write the disk for PAYLOAD to OUT as qcow2 (needs mkfs.fat and BUILD_DIR/qemu-img).
 
-    With TRACK the volume holds a one-track library (needs mtools, ffprobe and libgpod too)."""
+    With TRACK the volume holds a one-track library (needs mtools, ffprobe and libgpod too).
+    """
     fw = payload + b"\0" * (-len(payload) % BS)
     with tempfile.TemporaryDirectory() as tmp:
         fat, raw = Path(tmp, "fat"), Path(tmp, "disk")
@@ -53,7 +55,16 @@ def build_image(payload: bytes, out: Path, track: Path | None = None) -> None:
             mbr[e + 8 : e + 16] = struct.pack("<II", lba, cnt)
         mbr[0x1FE:0x200] = b"\x55\xaa"
         raw.write_bytes(mbr + b"\0" * (BS * (FW_BLOCK - 1)) + fw + fatb)
-        subprocess.check_call([REPO / "build/qemu-img", "convert", "-O", "qcow2", raw, out])  # noqa: S603
+        subprocess.check_call(  # noqa: S603
+            [
+                REPO / os.environ.get("BUILD_DIR", "build/native") / "qemu-img",
+                "convert",
+                "-O",
+                "qcow2",
+                raw,
+                out,
+            ]
+        )
 
 
 def parse_args(argv: list[str]) -> dict[str, str]:
@@ -64,7 +75,7 @@ def parse_args(argv: list[str]) -> dict[str, str]:
 def prepare(argv: list[str]) -> tuple[Path, Path, bytes, str | None, Path | None] | None:
     """Resolve and validate the firmware/disks flags; return None when there is nothing to build."""
     opts = parse_args(argv)
-    # With nothing configured (e.g. as the depends= of ipod:run) there is nothing to build.
+    # With no firmware configured there is nothing to build.
     if not argv and not opts["firmware"]:
         print("make-disk: no --firmware/FIRMWARE given; nothing to do")
         return None
@@ -81,19 +92,29 @@ def prepare(argv: list[str]) -> tuple[Path, Path, bytes, str | None, Path | None
         payload, version = read_firmware(fw)
     except (ValueError, OSError) as e:
         sys.exit(f"make-disk: {e}")
-    track = PORT_BLUE if opts["track"] == "portblue" else repo_path(opts["track"]) if opts["track"] else None
+    track = (
+        PORT_BLUE
+        if opts["track"] == "portblue"
+        else repo_path(opts["track"])
+        if opts["track"]
+        else None
+    )
     if track and not track.is_file():
         sys.exit(f"make-disk: no such track {track}")
     return fw, out, payload, version, track
 
 
 def main(argv: list[str]) -> int:
-    """Run make-disk, assuming mkfs.fat and build/qemu-img are available."""
+    """Run make-disk, assuming mkfs.fat and BUILD_DIR/qemu-img are available."""
     prepared = prepare(argv)
     if prepared is None:
         return 0
     _, out, payload, version, track = prepared
     out.parent.mkdir(parents=True, exist_ok=True)
     build_image(payload, out, track)
-    print(f"make-disk: created {out}" + (f" from firmware {version}" if version else "") + (f" with track {track.name}" if track else ""))
+    print(
+        f"make-disk: created {out}"
+        + (f" from firmware {version}" if version else "")
+        + (f" with track {track.name}" if track else "")
+    )
     return 0

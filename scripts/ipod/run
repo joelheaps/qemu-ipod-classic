@@ -1,25 +1,7 @@
 #!/bin/sh
-#MISE description="Boot the retailOS in the dev container: a visible SDL window 'ipod-live' (monitor, gdb :1405) or --headless; flags and environment: README.md"
-#MISE depends=["build-in-docker", "ipod:make-disk"]
-#
-# Runs without mise: ./scripts/ipod/run [--headless] [--osos=PATH] [--disks=PATH] [--firmware=PATH] [--timeout=SECS] [qemu args]
-# (bare osos=/disks=/firmware= work too; OSOS/DISK/FIRMWARE/T env are the defaults the flags override.)
-#
-# Visible: non-interactive shells (and anything not started from the GNOME session) usually have
-# DISPLAY/XAUTHORITY unset, which used to fail *after* `docker rm -f ipod-live` and kill the user's
-# window. So resolve them first and fail before touching the container. The OSOS that the window
-# runs is logged (echo + live.osos) because the window silently kept whatever build it was started
-# with. The container is detached.
-# Headless: foreground, no display or audio, QEMU's exit status propagates; a --timeout expiry
-# (124) is the normal end of a timed boot: exit 0.
-#
-# Env: OSOS and DISK (required, no defaults; .qcow2 is opened as qcow2, anything else raw),
-# FIRMWARE (.ipsw or payload; a missing DISK is created from it), T, FWGUID and IRAMSPILL (visible only;
-# defaults below), AUDIO=0 (no host audio), CONTAINER (default ipod-live; test seam),
-# XAUTHORITY_DIR (default /run/user/$(id -u); test seam), DRYRUN=1 (resolve + validate + log,
-# nothing is started). The QEMU debug knobs (DUMP, DISPLOG, ...) are forwarded when set.
+#MISE description="Boot retailOS natively on Linux (or inside Docker); flags: README.md"
 set -eu
-# Consume our flags from "$@"; the rest is appended to the QEMU command.
+cd "${MISE_PROJECT_ROOT:-$(dirname "$0")/../..}"
 HEADLESS=
 n=$#
 while [ "$n" -gt 0 ]; do
@@ -33,90 +15,41 @@ while [ "$n" -gt 0 ]; do
     *) set -- "$@" "$a" ;;
   esac
 done
-cd "${MISE_PROJECT_ROOT:-$(dirname "$0")/../..}"
-# Without mise there is no depends=: build the images and QEMU on first use.
-if [ ! -x build/qemu-system-arm ]; then
-  scripts/docker/build-dev-image && scripts/docker/build-build-image && scripts/build-in-docker
-fi
-[ -f "${OSOS:-}" ] || { echo "run: OSOS '${OSOS:-}' is not a file (pass --osos=PATH or set OSOS)" >&2; exit 1; }
-[ -n "${DISK:-}" ] || { echo "run: no disk (pass --disks=PATH or set DISK)" >&2; exit 1; }
+[ -f "${OSOS:-}" ] || { echo "run: OSOS '${OSOS:-}' is not a file (pass --osos=PATH)" >&2; exit 1; }
+[ -n "${DISK:-}" ] || { echo "run: no disk (pass --disks=PATH)" >&2; exit 1; }
 if [ ! -e "$DISK" ]; then
-  [ -n "${FIRMWARE:-}" ] || { echo "run: $DISK does not exist (pass --firmware=PATH or set FIRMWARE to create it)" >&2; exit 1; }
-  scripts/ipod/make-disk --firmware="$FIRMWARE" --disks="$DISK"
+  [ -n "${FIRMWARE:-}" ] || { echo "run: $DISK does not exist (pass --firmware=PATH)" >&2; exit 1; }
+  mise run ipod:make-disk -- --firmware="$FIRMWARE" --disks="$DISK"
 fi
+BUILD_DIR=${BUILD_DIR:-build/native}
+[ -x "$BUILD_DIR/qemu-system-arm" ] || { echo "run: no $BUILD_DIR/qemu-system-arm; run mise run build" >&2; exit 1; }
 : "${T:=0}"
-SCRATCH=${SCRATCH:-assets/scratch}
+: "${SCRATCH:=assets/scratch}"
 mkdir -p "$SCRATCH"
-NAME=${CONTAINER:-ipod-live}
-# Only $PWD is mounted by default: also mount the osos's and the disk's directories outside it.
-# Resolve the *file* with `readlink -f`: a workspace asset entry is a symlink into main
-# (assets/firmware/2.0.5 -> main/..., assets/disks/Emedia.img -> main/...), so `pwd` on its
-# logical dir keeps it inside $PWD, it gets no mount, and the link dangles in the container
-# (QEMU: Could not open 'assets/...').
-MOUNTS=""
-for f in "$OSOS" "$DISK"; do
-  d=$(dirname "$(readlink -f "$f")")
-  case $d/ in "$PWD"/*) ;; *) MOUNTS="$MOUNTS -v $d:$d" ;; esac
-done
-# -e NAME forwards the host var only when it is set.
-ENV_ARGS="-e SCRATCH -e DUMP -e GDB -e IRAMNOISE -e BOOTINFO -e LCDTYPE -e PMUCHARGER -e PMUHOLD -e PMUOOCSTAT -e GPIO_MEDIA -e LCD_DISPON -e DISPTRACE -e DISPLOG -e WHEELTRACE -e PMUTRACE -e PLUGIN"
-
 if [ -n "$HEADLESS" ]; then
-  DOCKER_ARGS="--rm -i"
-  set -- -display none "$@"
+  set -- -display none -audio driver=none "$@"
 else
-  # Defaults for the playable setup: the FireWire GUID (the library DB is signed with it) and
-  # IRAMSPILL (see ipod_classic.c).
   : "${FWGUID:=000A270021574219}"
   : "${IRAMSPILL:=0x10000}"
-  # Resolve the display. DISPLAY defaults to :0; XAUTHORITY is taken from a single Xwayland
-  # cookie if present. Explicit-but-unreadable is treated as unset since docker cannot bind-mount it.
-  : "${DISPLAY:=:0}"
-  if [ -z "${XAUTHORITY:-}" ] || [ ! -r "${XAUTHORITY:-}" ]; then
-    XAUTHORITY=""
-    for f in "${XAUTHORITY_DIR:-/run/user/$(id -u)}"/.mutter-Xwaylandauth.*; do
-      [ -r "$f" ] || continue
-      if [ -n "$XAUTHORITY" ]; then
-        echo "run: multiple Xwayland auth files; set XAUTHORITY explicitly" >&2
-        exit 1
-      fi
-      XAUTHORITY=$f
-    done
+  export FWGUID IRAMSPILL
+  driver=none
+  if [ "${AUDIO:-1}" != 0 ]; then
+    driver=pa
+    export AUDIOLIVE=1
   fi
-  if [ -z "$DISPLAY" ] || [ -z "${XAUTHORITY:-}" ] || [ ! -r "$XAUTHORITY" ]; then
-    echo "run: cannot determine X display (DISPLAY='$DISPLAY' XAUTHORITY='${XAUTHORITY:-}')" >&2
-    echo "run: set DISPLAY and XAUTHORITY, e.g. DISPLAY=:0 XAUTHORITY=\$(ls /run/user/\$(id -u)/.mutter-Xwaylandauth.*) scripts/ipod/run; or use --headless" >&2
-    echo "run: not touching container '$NAME'" >&2
-    exit 1
-  fi
-  # Record which OSOS the window is about to run.
-  md5sum "$OSOS" | tee "$SCRATCH/live.osos"
   if [ -n "${DRYRUN:-}" ]; then
-    echo "run: DRYRUN (DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY); would replace '$NAME'"
+    echo "run: DRYRUN (native window)"
     exit 0
   fi
-  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  md5sum "$OSOS" | tee "$SCRATCH/live.osos"
   rm -f "$SCRATCH/live.sock"
-  # Host audio: PulseAudio/PipeWire-pulse socket + AUDIOLIVE (i2s -> AUD_write). AUDIO=0 disables.
-  AUDIO_ARGS=""
-  if [ "${AUDIO:-1}" != 0 ] && [ -S "/run/user/$(id -u)/pulse/native" ]; then
-    AUDIO_ARGS="-v /run/user/$(id -u)/pulse:/run/user/$(id -u)/pulse -e XDG_RUNTIME_DIR=/run/user/$(id -u) -e PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native -e AUDIOLIVE=1"
-  fi
-  DOCKER_ARGS="--rm -d --name $NAME -v /tmp/.X11-unix:/tmp/.X11-unix -v $XAUTHORITY:/tmp/xauth:ro -e DISPLAY=$DISPLAY -e XAUTHORITY=/tmp/xauth -e SDL_VIDEODRIVER=x11 $AUDIO_ARGS"
-  set -- -display sdl -audio driver=pa -monitor "unix:$SCRATCH/live.sock,server,nowait" -gdb tcp::1405 "$@"
+  set -- -display sdl -audio "driver=$driver" \
+    -monitor "unix:$SCRATCH/live.sock,server,nowait" -gdb tcp::1405 "$@"
 fi
-if [ -n "$HEADLESS" ] && [ -n "${DRYRUN:-}" ]; then
-  echo "run: DRYRUN (headless)"
-  exit 0
-fi
-
-# shellcheck disable=SC2086  # DOCKER_ARGS/MOUNTS/ENV_ARGS are flag lists, split on purpose
-docker run $DOCKER_ARGS --user "$(id -u):$(id -g)" -v "$PWD:$PWD" $MOUNTS -w "$PWD" $ENV_ARGS \
-  -e DISK="$DISK" -e OSOS="$OSOS" -e T="$T" ${FWGUID:+-e FWGUID="$FWGUID"} ${IRAMSPILL:+-e IRAMSPILL="$IRAMSPILL"} \
-  qemu-ipod-dev sh -c '
-    rc=0
-    case $DISK in *.qcow2) fmt=qcow2 ;; *) fmt=raw ;; esac
-    timeout "$T" build/qemu-system-arm -M iPod-Classic -kernel "$OSOS" -serial null \
-      -drive if=ide,format=$fmt,file=$DISK -snapshot -L build/pc-bios "$@" || rc=$?
-    [ "$rc" = 124 ] && rc=0
-    exit "$rc"' sh "$@"
+if [ -n "${DRYRUN:-}" ]; then echo "run: DRYRUN (headless)"; exit 0; fi
+case $DISK in *.qcow2) fmt=qcow2 ;; *) fmt=raw ;; esac
+rc=0
+timeout "$T" "$BUILD_DIR/qemu-system-arm" -M iPod-Classic -kernel "$OSOS" -serial null \
+  -drive "if=ide,format=$fmt,file=$DISK" -snapshot -L "$BUILD_DIR/pc-bios" "$@" || rc=$?
+[ "$rc" = 124 ] && rc=0
+exit "$rc"

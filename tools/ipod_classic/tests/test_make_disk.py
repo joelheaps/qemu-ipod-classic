@@ -4,7 +4,7 @@
 # ///
 """Tests for make_disk.py. Run: mise run check:tests.
 
-The end-to-end tests need docker, the qemu-ipod-dev image and build/qemu-img, and skip without
+The end-to-end tests need mkfs.fat and BUILD_DIR/qemu-img, and skip without
 them. The real-firmware test also needs an Apple .ipsw under Apple's file name
 (iPod_<family>.<version>.ipsw) at $IPOD_TEST_IPSW, default assets/test/iPod_38.2.0.5.ipsw; keep it
 under assets/ (gitignored). All other fixtures are synthesized here.
@@ -24,7 +24,7 @@ from fwtool import decode_version, read_firmware
 from ipod_library import PORT_BLUE, populate
 from make_disk import BS, FAT_BYTES, FW_BLOCK, REPO, main, parse_args, prepare
 
-QEMU_IMG = REPO / "build/qemu-img"
+QEMU_IMG = REPO / os.environ.get("BUILD_DIR", "build/native") / "qemu-img"
 
 
 def fake_payload(size: int = 3 * BS + 123) -> bytes:
@@ -108,7 +108,7 @@ def test_parse_args(form: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def no_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset FIRMWARE/DISK and empty PATH, so any docker or qemu-img call would fail."""
+    """Unset FIRMWARE/DISK and empty PATH, so any formatter or qemu-img call would fail."""
     monkeypatch.delenv("FIRMWARE", raising=False)
     monkeypatch.delenv("DISK", raising=False)
     monkeypatch.delenv("TRACK", raising=False)
@@ -117,7 +117,7 @@ def no_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("no_env")
 def test_noops(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Nothing configured (as ipod:run's depends=) or an existing disk: exit 0, touch nothing."""
+    """Nothing configured or an existing disk: exit 0, touch nothing."""
     assert main([]) == 0
     assert "nothing to do" in capsys.readouterr().out
     disk = tmp_path / "d.qcow2"
@@ -142,17 +142,10 @@ def test_errors(tmp_path: Path) -> None:
 
 
 def _e2e_missing() -> str:
-    if not shutil.which("docker"):
-        return "docker not installed"
-    image = subprocess.run(
-        ["docker", "image", "inspect", "qemu-ipod-dev"],  # noqa: S607
-        capture_output=True,
-        check=False,
-    )
-    if image.returncode:
-        return "docker unreachable or no qemu-ipod-dev image (mise run docker:build-dev-image)"
+    if not shutil.which("mkfs.fat"):
+        return "mkfs.fat not installed (mise run setup)"
     if not QEMU_IMG.exists():
-        return "no build/qemu-img (mise run build-in-docker)"
+        return f"no {QEMU_IMG} (mise run build)"
     return ""
 
 
@@ -199,17 +192,17 @@ def test_build_synthetic(tmp_path: Path) -> None:
 
 @pytest.mark.usefixtures("no_env")
 def test_track_flag(tmp_path: Path) -> None:
-    """--track=portblue names the shipped fixture; a missing file fails before any container starts."""
+    """--track=portblue names the shipped fixture; a missing file fails early."""
     firmware = make_ipsw(tmp_path / "a.ipsw", fake_payload())
     base = [f"--firmware={firmware}", f"--disks={tmp_path / 'd.qcow2'}"]
-    assert prepare([*base, "--track=portblue"])[4] == PORT_BLUE  # type: ignore[index]
-    assert prepare(base)[4] is None  # type: ignore[index]
+    assert prepare([*base, "--track=portblue"])[4] == PORT_BLUE  # ty: ignore[not-subscriptable]
+    assert prepare(base)[4] is None  # ty: ignore[not-subscriptable]
     with pytest.raises(SystemExit, match="no such track"):
         prepare([*base, f"--track={tmp_path / 'absent.m4a'}"])
 
 
 def test_unknown_container(tmp_path: Path) -> None:
-    """A track whose extension has no iTunesDB container code is refused before anything is copied."""
+    """A track whose extension has no iTunesDB container code is refused before copying."""
     with pytest.raises(SystemExit, match="no container code"):
         populate(tmp_path / "fat", tmp_path / "song.flac")
 
@@ -221,7 +214,12 @@ def test_build_track(tmp_path: Path) -> None:
     disk = tmp_path / "d.qcow2"
     firmware = make_ipsw(tmp_path / "a.ipsw", payload)
     out = subprocess.run(  # noqa: S603
-        [REPO / "scripts/ipod/make-disk", f"--firmware={firmware}", f"--disks={disk}", "--track=portblue"],
+        [
+            REPO / "scripts/ipod/make-disk",
+            f"--firmware={firmware}",
+            f"--disks={disk}",
+            "--track=portblue",
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -230,11 +228,15 @@ def test_build_track(tmp_path: Path) -> None:
     raw = tmp_path / "d.raw"
     subprocess.run([QEMU_IMG, "convert", "-O", "raw", disk, raw], check=True)  # noqa: S603
     fat = (FW_BLOCK + -(-len(payload) // BS)) * BS
-    mtools = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-v", f"{tmp_path}:{tmp_path}"]
-    mtools += ["-e", "MTOOLS_SKIP_CHECK=1", "qemu-ipod-dev", "mtype", "-i", f"{raw}@@{fat}"]
-    song = subprocess.run([*mtools, "::iPod_Control/Music/F00/portblue.m4a"], check=True, capture_output=True)  # noqa: S603
+    mtools = ["mtype", "-i", f"{raw}@@{fat}"]
+    env = {**os.environ, "MTOOLS_SKIP_CHECK": "1"}
+    song = subprocess.run(  # noqa: S603
+        [*mtools, "::iPod_Control/Music/F00/portblue.m4a"], check=True, capture_output=True, env=env
+    )
     assert song.stdout == PORT_BLUE.read_bytes()
-    db = subprocess.run([*mtools, "::iPod_Control/iTunes/iTunesDB"], check=True, capture_output=True).stdout  # noqa: S603
+    db = subprocess.run(  # noqa: S603
+        [*mtools, "::iPod_Control/iTunes/iTunesDB"], check=True, capture_output=True, env=env
+    ).stdout
     assert db[:4] == b"mhbd"
     assert "portblue".encode("utf-16-le") in db
     assert b"Music:F00:portblue.m4a" in db or "Music:F00:portblue.m4a".encode("utf-16-le") in db

@@ -1,0 +1,5 @@
+#!/bin/sh
+#MISE description="Prepare a disk inside Ubuntu using the shared ipod:make-disk task"
+#MISE depends=["docker:build", "docker:build-dev-image"]
+set -eu
+exec python3 "$(dirname "$0")/../task.py" qemu-ipod-dev ipod:make-disk "$@"

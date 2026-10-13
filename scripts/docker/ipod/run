@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+# MISE description="Run the shared ipod:run task inside Ubuntu (--headless or a detached SDL window)"
+# MISE depends=["docker:build", "docker:build-dev-image"]
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from task import ROOT, command, paths
+
+
+def run(args):
+    os.chdir(ROOT)
+    values = paths(args)
+    if not values["OSOS"] or not Path(values["OSOS"]).is_file():
+        raise SystemExit("run: pass --osos=PATH pointing to decrypted firmware")
+    if not values["DISK"]:
+        raise SystemExit("run: pass --disks=PATH")
+    if not Path(values["DISK"]).exists() and not Path(values["FIRMWARE"]).is_file():
+        raise SystemExit("run: missing disk; pass --firmware=PATH to create it")
+    cmd = command("qemu-ipod-dev", "ipod:run", args)
+    name = os.environ.get("CONTAINER", "ipod-live")
+    if "--headless" not in args:
+        display = os.environ.get("DISPLAY", ":0")
+        auth = os.environ.get("XAUTHORITY", "")
+        if not auth or not Path(auth).is_file():
+            authdir = Path(os.environ.get("XAUTHORITY_DIR", f"/run/user/{os.getuid()}"))
+            cookies = sorted(authdir.glob(".mutter-Xwaylandauth.*"))
+            if len(cookies) == 1:
+                auth = str(cookies[0])
+            else:
+                auth = ""
+        if not display or not auth or not Path(auth).is_file():
+            raise SystemExit(
+                "run: set DISPLAY and readable XAUTHORITY, or use --headless; existing container untouched"
+            )
+        # Replace foreground stdin with a managed, detached window.
+        cmd.remove("-i")
+        extra = [
+            "-d",
+            "--name",
+            name,
+            "-v",
+            "/tmp/.X11-unix:/tmp/.X11-unix",
+            "-v",
+            f"{Path(auth).resolve()}:/tmp/xauth:ro",
+            "-e",
+            f"DISPLAY={display}",
+            "-e",
+            "XAUTHORITY=/tmp/xauth",
+            "-e",
+            "SDL_VIDEODRIVER=x11",
+        ]
+        pulse = Path(f"/run/user/{os.getuid()}/pulse")
+        if os.environ.get("AUDIO", "1") != "0" and (pulse / "native").is_socket():
+            extra += [
+                "-v",
+                f"{pulse}:{pulse}",
+                "-e",
+                f"XDG_RUNTIME_DIR=/run/user/{os.getuid()}",
+                "-e",
+                f"PULSE_SERVER=unix:{pulse}/native",
+            ]
+        else:
+            extra += ["-e", "AUDIO=0"]
+        cmd[2:2] = extra
+    if os.environ.get("DRYRUN"):
+        print(cmd)
+        return 0
+    if "--headless" not in args:
+        subprocess.run(["docker", "rm", "-f", name], check=False, stdout=subprocess.DEVNULL)
+    return subprocess.call(cmd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(run(sys.argv[1:]))

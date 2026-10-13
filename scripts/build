@@ -1,0 +1,28 @@
+#!/bin/sh
+#MISE description="Build QEMU and trace plugins natively on Linux (run setup once first)"
+set -eu
+[ "$(uname -s)" = Linux ] || { echo "build: native builds currently support Linux only" >&2; exit 1; }
+cd "${MISE_PROJECT_ROOT:-$(dirname "$0")/..}"
+root=$PWD
+for tool in cc make ninja pkg-config uv; do
+  command -v "$tool" >/dev/null || { echo "build: missing $tool; run mise run setup" >&2; exit 1; }
+done
+pkg-config --exists glib-2.0 pixman-1 sdl2 libcrypto libavcodec libavutil || {
+  echo "build: missing development libraries; run mise run setup" >&2; exit 1
+}
+mkdir -p "${BUILD_DIR:-build/native}"
+cd "${BUILD_DIR:-build/native}"
+# QEMU inherits distlib from this uv venv and manages its own bundled Meson wheel.
+env -u UV_PYTHON_PREFERENCE uv venv --allow-existing --managed-python --python "${QEMU_PYTHON:-3.14.8}" bootstrap
+uv pip install --python bootstrap/bin/python 'distlib==0.4.0' --link-mode copy
+build_python="$PWD/bootstrap/bin/python"
+if [ ! -f build.ninja ] || [ "$#" -gt 0 ]; then
+  "$root/configure" --python="$build_python" --without-default-features \
+    --enable-sdl --enable-pa --enable-pixman --enable-tcg --enable-tools --enable-plugins \
+    --enable-fdt -Dsm1_decoder=enabled --disable-docs --disable-cocoa \
+    --target-list=arm-softmmu --disable-capstone --disable-slirp \
+    --extra-cflags="$(pkg-config --cflags libcrypto)" \
+    --extra-ldflags="$(pkg-config --libs libcrypto)" --disable-werror --enable-pie "$@"
+fi
+make -j "${JOBS:-$(getconf _NPROCESSORS_ONLN)}" qemu-system-arm qemu-img
+make -C contrib/plugins libpctrace.so libprovtrace.so

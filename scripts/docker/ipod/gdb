@@ -1,0 +1,4 @@
+#!/bin/sh
+#MISE description="Run the shared GDB task inside the live Docker container"
+set -eu
+exec docker exec -e "T=${T:-30}" "${CONTAINER:-ipod-live}" mise run ipod:gdb -- "$@"

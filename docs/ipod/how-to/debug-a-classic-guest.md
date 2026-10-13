@@ -4,8 +4,9 @@ Tasks against `-M iPod-Classic` running retailOS 2.0.5. Addresses, environment v
 
 Ground rules:
 
-- Run QEMU and its client (gdb, a monitor script) in the same `docker run … qemu-ipod-dev bash -c '...'`: containers do not share the host's `127.0.0.1`.
-- Use your own ports and sockets. The live window (`mise run ipod:run`) owns `$SCRATCH/live.sock` and gdb `:1405`.
+- For native runs, use `mise run ipod:gdb`; for the managed Docker window use `mise run docker:ipod:gdb`.
+- When using Docker, run QEMU and its client (gdb, a monitor script) in the same `docker run … qemu-ipod-dev bash -c '...'`: containers do not share the host's `127.0.0.1`.
+- Use your own ports and sockets. The live window (`mise run ipod:run` or `mise run docker:ipod:run`) owns `$SCRATCH/live.sock` and gdb `:1405`.
 - Keep output under `$SCRATCH` (`assets/scratch`); the container's `/tmp` is not the host's.
 
 ## Boot headless
@@ -42,9 +43,9 @@ Run with `DISPLOG=1`: every change of a layer source register prints `s5l8702.di
 
 ```sh
 docker run --rm -i --user $(id -u):$(id -g) -v $PWD:$PWD -w $PWD qemu-ipod-dev \
-  bash -c 'T=40 build/qemu-system-arm -M iPod-Classic \
+  bash -c 'T=40 build/docker/qemu-system-arm -M iPod-Classic \
   -kernel assets/firmware/2.0.5/osos_decrypted.bin -serial null \
-  -drive if=ide,format=raw,file=assets/disks/E.img -snapshot -L build/pc-bios \
+  -drive if=ide,format=raw,file=assets/disks/E.img -snapshot -L build/docker/pc-bios \
   -display none -gdb tcp::1701 >/dev/null 2>&1 &
   sleep 25; gdb-multiarch -nx -batch -ex "set arm abi AAPCS" -ex "target remote :1701" \
   -ex "break *0x08069a5c" -ex continue -ex "info registers" -ex detach'
@@ -59,7 +60,7 @@ docker run --rm -i --user $(id -u):$(id -g) -v $PWD:$PWD -w $PWD qemu-ipod-dev \
 
 ## Trace without stopping (pctrace)
 
-`mise run build-in-docker` builds `build/contrib/plugins/libpctrace.so`. Add `-plugin build/contrib/plugins/libpctrace.so,<spec>` to the boot. The default trigger is `key_dispatch` `0x08056900`; options are documented at the top of `contrib/plugins/pctrace.c`.
+`mise run build` or `mise run docker:build` builds `BUILD_DIR/contrib/plugins/libpctrace.so` (`build/native` or `build/docker`). Add `-plugin BUILD_DIR/contrib/plugins/libpctrace.so,<spec>` to the boot. The default trigger is `key_dispatch` `0x08056900`; options are documented at the top of `contrib/plugins/pctrace.c`.
 
 - Register and memory reads (`regpc=`, `sendex=`, `memr=`) only happen at a TB head; a mid-TB PC is skipped and counted as `[mid-TB skipped=N]`. Probe a function entry or a return address.
 - In `memr=ADDR:REG:OFF:LEN:LABEL`, `REG` is a register index (0-12 = r0-r12, 13 sp, 14 lr, 15 pc).

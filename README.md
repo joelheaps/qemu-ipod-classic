@@ -20,34 +20,42 @@ Firmware images can be found at [The Apple Wiki](<https://theapplewiki.com/wiki/
 
 ## Building and running
 
-This repository uses the QEMU project as its base and can be built like such, but this iPod fork adds [Docker](https://docs.docker.com/engine/install/) for build and execution convenience. Optionally, [mise](https://mise.jdx.dev) can be used to run tasks and manage environment variables.
+Mise manages contributor tools and exposes the same tasks on the host and inside Docker. The build follows upstream QEMU's `configure` → `make` workflow. Native setup targets Ubuntu 24.04/26.04 and Fedora with full FFmpeg packages; macOS native builds are outside this first pass.
 
-This assumes you are using Linux, or at least an X server (or X compatibility shim, if on Wayland) is available if you want to run the emulator in a visible window.
+Install [mise](https://mise.jdx.dev), then choose either path. A visible window requires a Linux desktop; Docker windows need X11 or Xwayland and a readable Xauthority file. Headless Docker runs can also be launched from other Docker hosts.
 
-**With mise:**
-
-Mise wraps `scripts/` and declares task dependencies.
+**Native Linux:**
 
 ```sh
-mise run docker:build-images     # once: the qemu-ipod-dev and qemu-ipod-build images
-mise run build-in-docker         # configure (first time) and build build/qemu-system-arm
-mise run ipod:make-disk -- --firmware=path/to/iPod_38.2.0.5.ipsw --disks=path/to/disk.qcow2  # once: an empty disk
-mise run ipod:run -- --osos=path/to/osos_decrypted.bin --disks=path/to/disk.qcow2  # boot in a visible SDL window (needs an X display)
-mise run ipod:run -- --headless --timeout=30 --osos=... --disks=...  # no window: boot for 30 s (default 0 = no limit)
+mise install
+mise run setup                  # once: installs host packages, using sudo when needed
+mise run build                  # build/native/qemu-system-arm, qemu-img and trace plugins
+mise run ipod:make-disk -- --firmware=path/to/iPod_38.2.0.5.ipsw --disks=path/to/disk.qcow2
+mise run ipod:run -- --osos=path/to/osos_decrypted.bin --disks=path/to/disk.qcow2
+mise run ipod:run -- --headless --timeout=30 --osos=... --disks=...
 ```
 
-**Without mise:**
+`setup` wraps upstream's `apt-get build-dep --arch-only qemu` / `dnf builddep qemu`, then installs the fork's extra build and runtime tools. On Ubuntu, enable source repositories first (`Types: deb deb-src` in the Ubuntu deb822 source file, or equivalent `deb-src` entries). On Fedora, enable RPM Fusion yourself for full `ffmpeg` / `ffmpeg-devel` packages; distribution `ffmpeg-free` packages lack some codecs this fork needs. `--arch-only` omits distribution firmware rebuilds and their cross-compilers. Setup does not add repositories or upgrade the operating system. Builds check prerequisites and never invoke setup automatically.
 
-Execute scripts directly.
+**Docker:**
+
+Requires a working Docker installation. Mise's Python runs the host-side wrappers; QEMU dependencies are installed only inside the images.
 
 ```sh
-scripts/docker/build-dev-image   # once: the qemu-ipod-dev and qemu-ipod-build images
-scripts/docker/build-build-image
-scripts/build-in-docker          # configure (first time) and build build/qemu-system-arm
-scripts/ipod/make-disk --firmware=path/to/iPod_38.2.0.5.ipsw --disks=path/to/disk.qcow2  # makes an iPod-compatible disk image. Requires the dev Docker container. Wraps tools/ipod_classic/make_disk.py, which can be used directly as well
-scripts/ipod/run --osos=path/to/osos_decrypted.bin --disks=path/to/disk.qcow2  # boot in a visible SDL window (needs an X display)
-scripts/ipod/run --headless --timeout=30 --osos=... --disks=...  # no window: boot for 30 s (default 0 = no limit)
+mise install
+mise run docker:build            # builds its image as needed; build/docker/qemu-system-arm
+mise run docker:ipod:make-disk -- --firmware=path/to/iPod_38.2.0.5.ipsw --disks=path/to/disk.qcow2
+mise run docker:ipod:run -- --osos=path/to/osos_decrypted.bin --disks=path/to/disk.qcow2
+mise run docker:ipod:run -- --headless --timeout=30 --osos=... --disks=...
 ```
+
+Docker wrappers invoke `mise run build`, `mise run ipod:make-disk`, and `mise run ipod:run` inside Ubuntu. The Dockerfiles also invoke the shared `setup` task during image construction (`--runtime` for the dev image). Native setup never runs on the Docker host. Image caching tracks the Dockerfile, mise configuration and setup script. Execution tasks come from the mounted checkout, so changes to them do not rebuild images. Ubuntu 26.04 is the validated Docker LTS base. The full ARM emulator, qemu-img and both trace plugins build with uv-managed Python 3.14.8; synthetic disk, headless guest and GDB checks pass. RetailOS and desktop window/audio checks require real firmware and a Linux desktop.
+
+Native windows run in the foreground. Docker windows are detached in the managed `ipod-live` container. `AUDIO=0` disables host audio; Docker audio forwards an available PulseAudio/PipeWire-pulse socket. Without that socket the Docker window runs silently. `DRYRUN=1` previews launch behavior when scripts are invoked directly; mise Docker task dependencies may build images first.
+
+`BUILD_DIR` defaults to `build/native`; Docker wrappers select `build/docker`. `JOBS` overrides native/container build parallelism. QEMU uses uv-managed Python 3.14.8 (`QEMU_PYTHON` can override it), with a local `BUILD_DIR/bootstrap` virtual environment and pinned distlib. QEMU manages its own bundled Meson wheel. Docker images preinstall that Python version. Build defaults enable only the features needed by this fork, including SDL, PulseAudio, FFmpeg decoders and trace plugins. Pass configure flags to `mise run build -- ...` or `mise run docker:build -- ...`; supplying flags reconfigures the selected directory. Use separate build directories for distinct configurations.
+
+The old `build-in-docker` task has been removed. `ipod:*` tasks now run in their current environment; use `docker:*` to select container execution. Existing binaries in `build/` are not reused. Tasks can also be invoked as scripts directly after tool/dependency setup; Docker script dependencies require the corresponding images/build to exist.
 
 Emulation startup requires both an unencrypted Apple firmware blob (`osos` image) and iPod compatible disk image, which can be generated using `make-disk` and the encrypted firmware blob.
 
@@ -88,10 +96,10 @@ Creates a bootable disk, thin-provisioned qcow2, for `ipod:run`: empty, or with 
 The script behaves as follows:
 
 - If the disk file already exists, the script leaves it unchanged. To build a new disk, delete the file first.
-- If no flags are given and `FIRMWARE` is not set, the script does nothing and reports that. This allows `ipod:run`, which depends on the `ipod:make-disk` task, to proceed when you supply your own disk.
+- If no flags are given and `FIRMWARE` is not set, the script does nothing and reports that. This allows an existing disk to be used without supplying firmware.
 - `ipod:run` also calls the script when the disk named by `DISK` does not exist and a firmware was supplied (`--firmware` or `FIRMWARE`).
 
-The script runs `tools/ipod_classic/make_disk.py` in the `qemu-ipod-dev` container, which provides the tools it needs. What it builds, and how it reads the firmware, is described in `tools/README.md`.
+The script runs `tools/ipod_classic/make_disk.py` using `mkfs.fat` and `BUILD_DIR/qemu-img` in its current environment. `docker:ipod:make-disk` invokes the same task in the dev container. What it builds, and how it reads the firmware, is described in `tools/README.md`.
 
 `ipod:run` boots with QEMU's `-snapshot`, so guest writes go to an overlay and never reach the disk file.
 
@@ -110,11 +118,12 @@ The script runs `tools/ipod_classic/make_disk.py` in the `qemu-ipod-dev` contain
 iPod Classic tooling tests are in `tools/ipod_classic/tests/` and run under `pytest`:
 
 ```sh
-mise run check:tests                 # all tests; the docker end-to-end ones skip without docker. Alternatively, scripts/check/tests
+mise run check:tests                 # native tests; integration tests skip without mkfs.fat/qemu-img
 mise run check:tests -- -k version   # extra arguments are passed to pytest
+mise run docker:check                # the same checks inside Docker
 ```
 
-The Docker end-to-end tests (`tests/test_make_disk.py`) skip unless `docker`, the `qemu-ipod-dev` image and `build/qemu-img` are present. The real-firmware test additionally needs an Apple `.ipsw` under Apple's file name `iPod_<family>.<version>.ipsw`, at `assets/test/iPod_38.2.0.5.ipsw` (or wherever `IPOD_TEST_IPSW` points).
+The disk end-to-end tests (`tools/ipod_classic/tests/test_make_disk.py`) require `mkfs.fat` and `BUILD_DIR/qemu-img`, so they work natively or inside Docker. The real-firmware test additionally needs an Apple `.ipsw` under Apple's file name `iPod_<family>.<version>.ipsw`, at `assets/test/iPod_38.2.0.5.ipsw` (or wherever `IPOD_TEST_IPSW` points).
 
 ## Limitations
 

@@ -1,0 +1,49 @@
+#!/bin/sh
+#MISE description="Install Ubuntu/Fedora host dependencies (sudo); --runtime installs container runtime tools only"
+set -eu
+[ "$(uname -s)" = Linux ] || { echo "setup: Linux only (Ubuntu or Fedora)" >&2; exit 1; }
+mode=${1:-build}
+case "$mode" in build|--runtime) ;; *) echo "usage: setup [--runtime]" >&2; exit 1 ;; esac
+# OS_RELEASE is also useful when testing distribution dispatch without installing packages.
+# shellcheck disable=SC1090
+. "${OS_RELEASE:-/etc/os-release}"
+if [ "$(id -u)" = 0 ]; then elevated=; else elevated=sudo; fi
+case "$ID" in
+  ubuntu)
+    $elevated apt-get update
+    if [ "$mode" = build ]; then
+      # Architecture-independent deps rebuild other machines' firmware and need unavailable cross compilers.
+      $elevated apt-get build-dep --arch-only -y qemu || {
+        echo "setup: check apt errors above; enable Ubuntu source repositories (deb-src / Types: deb deb-src) if missing" >&2
+        exit 1
+      }
+      $elevated apt-get install -y build-essential ninja-build pkg-config python3-venv \
+        libglib2.0-dev libpixman-1-dev libsdl2-dev libssl-dev libpulse-dev \
+        zlib1g-dev libavcodec-dev libavutil-dev libswresample-dev git
+    fi
+    $elevated apt-get install -y gdb-multiarch binutils-arm-none-eabi dosfstools mtools \
+      ffmpeg libgpod4t64 libglib2.0-0t64 libpixman-1-0 libsdl2-2.0-0 libpulse0 libsndio7.0 libssl3t64 libfdt1 zlib1g
+    ;;
+  fedora)
+    if [ "$mode" = build ]; then
+      if ! dnf builddep --help >/dev/null 2>&1; then
+        if command -v dnf5 >/dev/null; then
+          $elevated dnf install -y dnf5-plugins
+        else
+          $elevated dnf install -y dnf-plugins-core
+        fi
+      fi
+      $elevated dnf builddep -y qemu
+      $elevated dnf install -y gcc gcc-c++ make ninja-build pkgconf-pkg-config \
+        glib2-devel pixman-devel SDL2-devel openssl-devel pulseaudio-libs-devel \
+        zlib-devel ffmpeg-devel git || {
+        echo "setup: full FFmpeg development packages require RPM Fusion; enable it and retry" >&2
+        exit 1
+      }
+    fi
+    # Full FFmpeg (AAC/H.264) needs an already-enabled RPM Fusion repository.
+    $elevated dnf install -y gdb binutils dosfstools mtools ffmpeg \
+      glib2 pixman SDL2 pulseaudio-libs openssl-libs libfdt zlib
+    ;;
+  *) echo "setup: unsupported distribution '$ID'; install QEMU build dependencies manually" >&2; exit 1 ;;
+esac

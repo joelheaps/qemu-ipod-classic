@@ -1,14 +1,22 @@
-# Dev image: runs and debugs guests (QEMU runtime libs + guest/session tooling).
-# The QEMU build toolchain lives in Dockerfile.build; this image has no compilers.
+# Ubuntu 26.04 LTS; validated ARM64 builds and headless runtime checks.
+FROM ghcr.io/jdx/mise:2026.9.12 AS mise
 FROM ubuntu:26.04
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gdb-multiarch binutils-arm-none-eabi python3 python3-venv python3-capstone \
-    radare2 dosfstools mtools ffmpeg ca-certificates \
-    libglib2.0-0t64 libgpod4t64 libpixman-1-0 libsdl2-2.0-0 libpulse0 libsndio7.0 zlib1g \
-    && rm -rf /var/lib/apt/lists/*
-# uv runs the PEP 723 script headers of tools/ipod_classic/*.py (dependencies fetched on first use).
-# The container runs as the host uid with no writable $HOME, so keep uv's cache and managed
-# installs somewhere world-writable and use the system python.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
-ENV UV_CACHE_DIR=/tmp/uv-cache UV_PYTHON_PREFERENCE=only-system
+COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
+ENV DEBIAN_FRONTEND=noninteractive \
+    MISE_DATA_DIR=/opt/mise \
+    MISE_CACHE_DIR=/tmp/mise-cache \
+    MISE_STATE_DIR=/tmp/mise-state \
+    MISE_TRUSTED_CONFIG_PATHS=/ \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python \
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_PYTHON_DOWNLOADS=never
+# apt build-dep needs source repositories; the stock Ubuntu image only enables binaries.
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git
+WORKDIR /opt/qemu-bootstrap
+COPY mise.toml ./mise.toml
+COPY scripts/setup ./scripts/setup
+RUN mise install && UV_PYTHON_DOWNLOADS=manual mise exec -- uv python install 3.14.8
+# Runtime/debug tooling; setup's runtime mode does not install QEMU's compilers.
+RUN mise run setup -- --runtime && rm -rf /var/lib/apt/lists/*

@@ -177,6 +177,8 @@ meson_options_help() {
   printf "%s\n" '  selinux         SELinux support in qemu-nbd'
   printf "%s\n" '  slirp           libslirp user mode network backend support'
   printf "%s\n" '  slirp-smbd      use smbd (at path --smbd=*) in slirp networking'
+  printf "%s\n" '  sm1-decoder     libavcodec frame decoder for the iPod classic SM1 audio'
+  printf "%s\n" '                  engine'
   printf "%s\n" '  smartcard       CA smartcard emulation support'
   printf "%s\n" '  snappy          snappy compression support'
   printf "%s\n" '  sndio           sndio sound support'
@@ -471,6 +473,8 @@ _meson_option_parse() {
     --disable-slirp) printf "%s" -Dslirp=disabled ;;
     --enable-slirp-smbd) printf "%s" -Dslirp_smbd=enabled ;;
     --disable-slirp-smbd) printf "%s" -Dslirp_smbd=disabled ;;
+    --enable-sm1-decoder) printf "%s" -Dsm1_decoder=enabled ;;
+    --disable-sm1-decoder) printf "%s" -Dsm1_decoder=disabled ;;
     --enable-smartcard) printf "%s" -Dsmartcard=enabled ;;
     --disable-smartcard) printf "%s" -Dsmartcard=disabled ;;
     --smbd=*) quote_sh "-Dsmbd=$2" ;;

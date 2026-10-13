@@ -1,0 +1,5 @@
+#!/bin/sh
+#MISE description="Run shared checks inside Ubuntu, including disk integration tests"
+#MISE depends=["docker:build", "docker:build-dev-image"]
+set -eu
+exec python3 "$(dirname "$0")/task.py" qemu-ipod-dev check "$@"

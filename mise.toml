@@ -1,7 +1,7 @@
-# Builds and target tooling run in Docker; host-side helper scripts use mise's python/uv.
+# Shared Linux tasks run on the host or in Docker. Only setup installs system packages.
 
 [tools]
-python = "3.14"
+python = "3.14.8"
 shellcheck = "latest"
 uv = "latest"
 

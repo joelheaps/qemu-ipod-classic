@@ -1,0 +1,8 @@
+# Only task/bootstrap inputs belong in image contexts; never firmware or build artifacts.
+**
+!mise.toml
+!scripts/
+!scripts/setup
+!docker/
+!docker/**
+scripts/**/__pycache__/

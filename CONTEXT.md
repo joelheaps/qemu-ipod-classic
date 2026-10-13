@@ -20,8 +20,8 @@ A QEMU fork that emulates iPod hardware closely enough to boot and run Apple's o
 
 ## Running the emulator
 
-**headless run** (`ipod:run --headless`): A boot of the retailOS with no display, bounded by `--timeout` seconds. _Avoid_: boot-headless, run-headless-as-SDL, headless boot
+**headless run** (`ipod:run --headless` or `docker:ipod:run --headless`): A boot of the retailOS with no display, bounded by `--timeout` seconds. _Avoid_: boot-headless, run-headless-as-SDL, headless boot
 
-**live window** (`ipod:run`): The persistent, managed SDL window (container `ipod-live`) with monitor, gdb and optional host audio. _Avoid_: live, emulator:run, emulator:live
+**live window**: An interactive SDL window with monitor, gdb and optional host audio. It can run natively (`ipod:run`) or in a managed container (`docker:ipod:run`). _Avoid_: live, emulator:run, emulator:live
 
-**attach gdb** (`ipod:live-gdb`): GDB attached to the running live window. _Avoid_: —
+**attach gdb** (`ipod:gdb` or `docker:ipod:gdb`): GDB attached to the running live window. _Avoid_: —

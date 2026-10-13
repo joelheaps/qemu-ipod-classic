@@ -1,35 +1,9 @@
 #!/usr/bin/env python3
-#MISE description="Create an empty bootable iPod classic disk (qcow2) from an .ipsw or Firmware-XX payload; flags: README.md"
-#MISE depends=["build-in-docker"]
-#
-# The disk is built by tools/ipod_classic/make_disk.py (tested by tools/ipod_classic/tests/test_make_disk.py),
-# which needs mkfs.fat and build/qemu-img. This script checks the inputs on the host, then re-execs
-# itself in the qemu-ipod-dev container to run it there; layout and flags: README.md.
-import os
-import subprocess
+#MISE description="Create an iPod disk using native mkfs.fat and the selected BUILD_DIR/qemu-img"
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools/ipod_classic"))
-from cli import REPO
-from make_disk import main, prepare
+from make_disk import main
 
-
-def run(argv: list[str]) -> int:
-    """Build the disk inside the dev container; re-execs itself there once."""
-    if os.environ.get("MAKE_DISK_IN_CONTAINER") == "1":
-        return main(argv)
-    prepared = prepare(argv)
-    if prepared is None:
-        return 0
-    fw, out, _, _, track = prepared
-    out.parent.mkdir(parents=True, exist_ok=True)
-    mounts = [arg for d in sorted({REPO, fw.parent, out.parent, *([track.parent] if track else [])}) for arg in ("-v", f"{d}:{d}")]
-    cmd = ["docker", "run", "--rm", "-i", "--user", f"{os.getuid()}:{os.getgid()}", *mounts]
-    cmd += ["-e", "MAKE_DISK_IN_CONTAINER=1", "qemu-ipod-dev"]
-    cmd += [str(REPO / "scripts/ipod/make-disk"), f"--firmware={fw}", f"--disks={out}"]
-    cmd += [f"--track={track}"] if track else []
-    return subprocess.call(cmd)  # noqa: S603
-
-
-sys.exit(run(sys.argv[1:]))
+sys.exit(main(sys.argv[1:]))
