@@ -78,7 +78,7 @@ Other arguments to `ipod:run` are passed to QEMU (under mise, after `--` if they
 
 ### Disk and firmware tasks
 
-Besides `ipod:run`, `scripts/ipod/` has one task for preparing a disk (`mise tasks` lists everything). Like `ipod:run`, it takes `--name=value` or `name=value` flags, each with an environment variable as its default; flags win. Relative paths are from the repository root, and no task assumes where you keep files.
+Besides `ipod:run`, `scripts/ipod/` has one task for preparing a disk (`mise tasks` lists everything). `mise run docs:api` regenerates the tools' API reference ([`docs/ipod/reference/tools-api/README.md`](docs/ipod/reference/tools-api/README.md)). Like `ipod:run`, it takes `--name=value` or `name=value` flags, each with an environment variable as its default; flags win. Relative paths are from the repository root, and no task assumes where you keep files.
 
 `--firmware` is an Apple `.ipsw` or its bare `Firmware-XX` payload (accepted inputs: `tools/README.md`). To inspect or extract firmware, run `fwtool.py` directly (commands: `tools/README.md`).
 
@@ -137,14 +137,16 @@ The disk end-to-end tests (`tools/ipod_classic/tests/test_make_disk.py`) require
 | -- | -- | -- |
 | How-to | [`docs/ipod/how-to/decrypt-classic-firmware.md`](docs/ipod/how-to/decrypt-classic-firmware.md) | `.ipsw` to `osos_decrypted.bin` with emCORE |
 | How-to | [`docs/ipod/how-to/debug-a-classic-guest.md`](docs/ipod/how-to/debug-a-classic-guest.md) | Boot, screenshots, keys, memory, gdb, pctrace, audio capture, snapshots |
+| How-to | [`docs/ipod/how-to/capture-ui-screenshots.md`](docs/ipod/how-to/capture-ui-screenshots.md) | Capture every menu screen with the rapid screenshot harness, compare two images |
+| Reference | [`docs/ipod/reference/screenshot-harness.md`](docs/ipod/reference/screenshot-harness.md) | Screenshot naming, exit status, `screen_tree.json` schema, charger states, environment variables |
 | Reference | [`hw/arm/ipod_classic/README.md`](hw/arm/ipod_classic/README.md) | S5L8702 memory map, device models, audio and video pipelines, environment variables, snapshot contract |
 | Reference | [`docs/ipod/classic6g-firmware.md`](docs/ipod/classic6g-firmware.md) | `.ipsw`/`]ih[`/IM3 formats, emCORE decrypt, NOR layout, what cannot be dumped |
 | Reference | [`tools/README.md`](tools/README.md) | Tools in this tree |
+| Reference | [`docs/ipod/reference/tools-api/README.md`](docs/ipod/reference/tools-api/README.md) | API of the tools, generated from docstrings |
 
 ## External and upstream resources
 
 Forked from [davidmonterocrespo24/qemu-ipod-classic](https://github.com/davidmonterocrespo24/qemu-ipod-classic), itself a fork of [devos50/qemu-ios](https://github.com/devos50/qemu-ios) (QEMU 8.2.0, branch `ipod_touch_2g`), which emulates the **iPod Touch 1G and 2G**.
-
 
 QEMU's own documentation is in [`docs/`](docs/).
 

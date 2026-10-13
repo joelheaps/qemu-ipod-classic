@@ -96,10 +96,7 @@ def test_native_build_never_installs_packages(
     assert "uv venv --allow-existing --managed-python --python 3.14.8 bootstrap" in commands
     assert "uv pip install --python bootstrap/bin/python distlib==0.4.0" in commands
     assert "make -j 2 qemu-system-arm qemu-img" in commands
-    assert (
-        "ninja contrib/plugins/libpctrace.so contrib/plugins/libprovtrace.so"
-        in commands
-    )
+    assert "ninja contrib/plugins/libpctrace.so contrib/plugins/libprovtrace.so" in commands
     assert "apt-get" not in commands
     assert "dnf" not in commands
 

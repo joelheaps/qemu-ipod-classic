@@ -14,6 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from cli import REPO, parse_flags, repo_path
 from fwtool import read_firmware
 from ipod_library import PORT_BLUE, populate

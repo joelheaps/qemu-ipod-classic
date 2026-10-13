@@ -7,7 +7,7 @@ paths are taken from the repo root, as `mise run` does.
 import os
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 
 
 def parse_flags(argv: list[str], flags: dict[str, str], usage: str) -> dict[str, str]:

@@ -5,4 +5,4 @@
 # pytest, e.g. `mise run check:tests -- -k version`.
 set -eu
 cd "${MISE_PROJECT_ROOT:-$PWD}"
-exec uvx --with cryptography pytest -c /dev/null --rootdir=. -o testpaths=tools/ipod_classic/tests -o pythonpath=tools/ipod_classic -p no:cacheprovider -rs "$@"
+exec uvx --with cryptography --with msgspec pytest -c /dev/null --rootdir=. -o testpaths=tools/ipod_classic/tests -o "pythonpath=tools/ipod_classic tools/ipod_classic/lib" -p no:cacheprovider -rs "$@"

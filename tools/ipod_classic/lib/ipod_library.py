@@ -2,10 +2,10 @@
 
 The retailOS lists a track only if iTunesDB carries libgpod's checksum, so the database is
 rewritten through libgpod (which signs it with the FireWire GUID in Device/SysInfo) instead of
-being patched by hand. The starting point is fixtures/ipod_control, a library written by libgpod
-with one track (portblue.m4a, the vetted AAC song); the requested track replaces that file and the
-fields libgpod keeps for it (title, path, size, length, bitrate). Needs mtools, ffprobe and
-libgpod.so.4; the qemu-ipod-dev container has them.
+being patched by hand. The starting point is sample_library/ipod_control, a library written by
+libgpod with one track (portblue.m4a, the vetted AAC song); the requested track replaces that
+file and the fields libgpod keeps for it (title, path, size, length, bitrate). Needs mtools,
+ffprobe and libgpod.so.4; the qemu-ipod-dev container has them.
 """
 
 import ctypes
@@ -17,8 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
-PORT_BLUE = FIXTURES / "portblue.m4a"
+SAMPLE_LIBRARY = Path(__file__).resolve().parent / "sample_library"
+PORT_BLUE = SAMPLE_LIBRARY / "portblue.m4a"
 FOLDER = "F00"  # the Music folder the track goes in (the retailOS reads F00..F49)
 
 # Itdb_Track field offsets in libgpod 0.8.3 (x86-64): gchar* title, gchar* ipod_path, then gint32s.
@@ -107,7 +107,7 @@ def populate(fat: Path, track: Path = PORT_BLUE) -> None:
         sys.exit(f"make-disk: no container code for {track.suffix} (known: {', '.join(MARKERS)})")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        shutil.copytree(FIXTURES / "ipod_control", root / "iPod_Control")
+        shutil.copytree(SAMPLE_LIBRARY / "ipod_control", root / "iPod_Control")
         (root / "iPod_Control/Music" / FOLDER).mkdir(parents=True)
         shutil.copy(track, root / "iPod_Control/Music" / FOLDER / track.name)
         rewrite_database(root, root / "iPod_Control/Music" / FOLDER / track.name)

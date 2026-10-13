@@ -1,0 +1,148 @@
+{
+  "watch": [[0, 0, 262, 22], [0, 22, 320, 240]],
+  "root": {
+    "name": "language",
+    "children": [
+      {
+        "name": "main",
+        "row": 0,
+        "arrive": 15,
+        "children": [
+          {
+            "name": "music",
+            "row": 0,
+            "children": [
+              {
+                "name": "cover_flow",
+                "row": 0,
+                "comment": "The wheel moves through albums, not rows: SELECT opens the song list of the album shown, so its child has row 0 and needs no wheel moves.",
+                "children": [
+                  {
+                    "name": "song_selection",
+                    "row": 0,
+                    "comment": "The track list of the album shown in Cover Flow (the title bar still reads Cover Flow). SELECT on a track would start playback; not modelled."
+                  }
+                ]
+              },
+              {
+                "name": "albums",
+                "row": 4
+              },
+              {
+                "name": "songs",
+                "row": 6,
+                "arrive": 12,
+                "children": [
+                  {
+                    "name": "now_playing",
+                    "row": 0,
+                    "cannot_leave_in_fast_timing": true,
+                    "arrive": 15,
+                    "comment": "The progress and elapsed-time band changes while a track plays. Starts playback; under fast timing MENU is ignored here for good, so visit it last.",
+                    "watch": [[0, 0, 262, 22], [0, 22, 320, 190]]
+                  }
+                ],
+                "watch": [[0, 0, 150, 240]]
+              }
+            ],
+            "watch": [[0, 0, 150, 240]]
+          },
+          {
+            "name": "videos",
+            "row": 1
+          },
+          {
+            "name": "photos",
+            "row": 2
+          },
+          {
+            "name": "extras",
+            "row": 4
+          },
+          {
+            "name": "settings",
+            "row": 5,
+            "arrive": 12,
+            "children": [
+              {
+                "name": "about",
+                "row": 0,
+                "arrive": 8
+              },
+              {
+                "name": "main_menu_customization",
+                "row": 3,
+                "arrive": 8
+              },
+              {
+                "name": "music_menu_customization",
+                "row": 4,
+                "arrive": 8
+              },
+              {
+                "name": "volume_limit",
+                "row": 5,
+                "arrive": 8
+              },
+              {
+                "name": "backlight",
+                "row": 6,
+                "arrive": 8
+              },
+              {
+                "name": "brightness",
+                "row": 7,
+                "arrive": 8
+              },
+              {
+                "name": "audiobooks",
+                "row": 8,
+                "arrive": 8
+              },
+              {
+                "name": "equalizer",
+                "row": 9,
+                "arrive": 8
+              },
+              {
+                "name": "date_time",
+                "row": 12,
+                "arrive": 8
+              },
+              {
+                "name": "language_settings",
+                "row": 14,
+                "arrive": 8,
+                "watch": [[0, 0, 150, 240]]
+              },
+              {
+                "name": "legal",
+                "row": 15,
+                "arrive": 8
+              },
+              {
+                "name": "reset_settings",
+                "row": 16,
+                "arrive": 8,
+                "comment": "Opens a dialog. Enter and back out with MENU, never confirm."
+              }
+            ],
+            "comment": "Lists watch only x < 150: the scrollbar (x 155 to 158) fades in after a step and out about 2 s later, so a settle can catch it either way. Row 0 (About) shows a marquee value, so its right pane moves. Rows 1, 2, 10, 11 and 13 toggle in place and are not screens.",
+            "watch": [[0, 0, 150, 240]]
+          }
+        ],
+        "watch": [[0, 0, 150, 240]]
+      }
+    ],
+    "comment": "Boot screen. The right pane cycles through languages.",
+    "watch": [[0, 0, 150, 240]]
+  },
+  "overlays": [
+    {
+      "name": "charging",
+      "arrive": 10.0,
+      "requires_charger_state": "wall",
+      "comment": "Appears on its own over any screen about 4.6 s after the boot frame, only with the wall adapter (battery and USB blank the LCD instead). Any key or MENU dismisses it."
+    }
+  ]
+}

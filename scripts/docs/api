@@ -1,0 +1,93 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+#MISE description="Regenerate docs/ipod/reference/tools-api/ from the tools' docstrings (handsdown); skipped when up to date"
+#MISE sources=["tools/ipod_classic/*.py", "scripts/docs/api"]
+#MISE outputs=["docs/ipod/reference/tools-api/README.md"]
+"""mise run docs:api -- regenerate docs/ipod/reference/tools-api/, one handsdown page per module.
+
+Handsdown only documents packages and drops module docstrings (where our CLI usage lives), so this
+runs it on a scratch copy with empty __init__.py files, then puts each module's docstring back and
+points the source links at the real files."""
+import ast
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS = ROOT / 'tools' / 'ipod_classic'
+TARGET = ROOT / 'docs/ipod/reference/tools-api'
+SKIP = {'tests', 'sample_library', '__pycache__'}
+SOURCE_LINK = re.compile(r'\]\((?:\.\./)+(?:src/)?(tools/[^)#]*?)(?:/?__init__\.py)?(#L\d+)?\)')
+
+
+def modules() -> list[Path]:
+    """Every non-test module under `tools/ipod_classic/`, sorted by path."""
+    return [
+        p
+        for p in sorted(TOOLS.rglob('*.py'))
+        if not p.name.startswith('test_') and not SKIP.intersection(p.relative_to(TOOLS).parts)
+    ]
+
+
+def finish(page: Path) -> None:
+    """Point `page`'s source links at the real files and, for a module page, add the module docstring."""
+    text = SOURCE_LINK.sub(
+        lambda m: f']({os.path.relpath(ROOT / m[1], page.parent)}{m[2] or ""})',
+        page.read_text(),
+    )
+    source = ROOT / page.relative_to(TARGET).with_suffix('.py')
+    if source.is_file():
+        doc = ast.get_docstring(ast.parse(source.read_text()), clean=False)
+        if doc:
+            text = re.sub(
+                r'(?m)^(> Auto-generated documentation for .*\n)',
+                lambda m: m[1] + f'\n```text\n{doc.strip(chr(10))}\n```\n',
+                text,
+                count=1,
+            )
+    page.write_text(text)
+
+
+def main() -> int:
+    """Regenerate the API reference and return the exit status."""
+    found = modules()
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = Path(tmp, 'src'), Path(tmp, 'out')
+        for p in found:
+            dest = src / p.relative_to(ROOT)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(p, dest)
+            # handsdown only documents packages: make every directory importable.
+            for d in dest.parents:
+                if d == src:
+                    break
+                (d / '__init__.py').touch()
+        # typed-ast (a handsdown dependency) does not build under C23.
+        subprocess.run(
+            ['uvx', 'handsdown', '-i', '.', '-o', str(out), '-n', 'tools', '-q'],
+            cwd=src,
+            env=dict(os.environ, CFLAGS='-std=gnu11'),
+            check=True,
+        )
+        shutil.rmtree(TARGET, ignore_errors=True)
+        shutil.copytree(out, TARGET)
+    pages = sorted(TARGET.rglob('*.md'))
+    for page in pages:
+        finish(page)
+    # Keep the pages byte-identical to what `mise run check:doc-formatting` would leave.
+    subprocess.run(
+        ['uvx', '--with', 'mdformat-gfm', 'mdformat', '--wrap', 'no', '--compact-tables', *map(str, pages)],
+        check=True,
+    )
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

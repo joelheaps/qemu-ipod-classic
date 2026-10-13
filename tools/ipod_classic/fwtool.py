@@ -10,7 +10,7 @@ Handles two nested container formats:
      This is what the `Firmware-XX` payload inside an .ipsw is.
   2. The per-image S5L870x "8702" header that wraps each osos/aupd/rsrc blob.
 
-Usage (flags as in scripts/ipod/run; see tools/ipod_classic/cli.py):
+Usage (flags as in scripts/ipod/run; see tools/ipod_classic/lib/cli.py):
     fwtool.py list    --firmware=PATH
     fwtool.py extract --firmware=PATH --outdir=DIR
     fwtool.py osos    --firmware=PATH --osos-encrypted=PATH
@@ -26,6 +26,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from cli import parse_flags, repo_path
 
 FW_MAGIC_OFF = 0x100
